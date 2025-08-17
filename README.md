@@ -23,6 +23,8 @@ Windows application for optimal bin packing of raster images into various envelo
 - **Preview System**: Generate downsampled preview (max 4000px) before final rendering
 - **Approval Workflow**: Review layouts before generating full resolution TIFF
 - **Comprehensive Logging**: Detailed project logs with all parameters and results
+- **8-bit Grayscale Output**: Memory-efficient full-scale generation (66% less memory than RGB)
+- **Color Previews**: Thumbnails and previews remain in color for better visualization
 
 ## 🛠️ Building from Source
 
@@ -80,9 +82,14 @@ pyinstaller nanofiche_image_prep.spec
 
 ## 📁 Output Files
 
-- `[project]_[timestamp]_full.tif` - Full resolution output
-- `[project]_[timestamp]_thumbnail.tif` - Reduced size (rejected layouts)
+- `[project]_[timestamp]_full.tif` - Full resolution output (8-bit grayscale for memory efficiency)
+- `[project]_[timestamp]_thumbnail.tif` - Reduced size (rejected layouts, color)
 - `[project]_[timestamp]_[full|thumbnail].log` - Detailed project log
+
+### Output Formats
+- **Full Scale**: 8-bit grayscale TIFF with LZW compression at 300 DPI
+- **Previews/Thumbnails**: Color RGB TIFF with LZW compression at 200 DPI
+- **Memory Savings**: Grayscale uses 66% less memory than RGB (1 byte vs 3 bytes per pixel)
 
 ## 🔧 Supported Formats
 
@@ -97,7 +104,13 @@ The application implements sophisticated packing algorithms:
 
 - **Rectangle Packing**: Optimizes grid layout to match target aspect ratio while minimizing area
 - **Circle/Ellipse**: Uses spiral placement for optimal space utilization
+- **Numeric Ordering**: Files are sorted by numeric suffix for proper page sequence
 - All algorithms maintain original image aspect ratios within bins
+
+### Performance Optimizations
+- **8-bit Grayscale**: Reduces memory usage by 66% compared to RGB
+- **LZW Compression**: Efficient TIFF compression for smaller file sizes
+- **Progressive Processing**: Large datasets processed in batches to manage memory
 
 ## 🤝 Contributing
 
@@ -119,7 +132,9 @@ This project is part of the NanoFiche/MicroFiche digitization workflow.
 
 ### Memory issues with large layouts
 - Layouts over 500M pixels may require significant RAM
-- Consider smaller bin dimensions or fewer images
+- 8-bit grayscale mode reduces memory usage by 66%
+- For 1000+ images: expect 2-4 GB memory usage with grayscale
+- Consider smaller bin dimensions or fewer images for very large datasets
 
 ### Can't see grid lines in preview
 - Grid lines only appear for square/rectangle shapes
