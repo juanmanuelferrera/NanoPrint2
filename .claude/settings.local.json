@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(mkdir:*)",
-      "Bash(./setup_nanofiche.sh:*)"
-    ],
-    "deny": []
-  }
-}
