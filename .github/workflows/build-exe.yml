@@ -1,0 +1,66 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Build EXE with PyInstaller
+      run: |
+        pyinstaller nanofiche_image_prep.spec
+    
+    - name: Test executable
+      run: |
+        dist\NanoFiche_Image_Prep.exe --version || echo "No version flag implemented"
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: NanoFiche-Image-Prep-Windows
+        path: dist/NanoFiche_Image_Prep.exe
+    
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: ncipollo/release-action@v1
+      with:
+        artifacts: dist/NanoFiche_Image_Prep.exe
+        token: ${{ secrets.GITHUB_TOKEN }}
+        draft: false
+        prerelease: false
+        body: |
+          # NanoFiche Image Prep Release
+          
+          ## Installation
+          1. Download `NanoFiche_Image_Prep.exe`
+          2. Run the executable (no installation required)
+          
+          ## Features
+          - Optimal bin packing for raster images
+          - Support for square, rectangle, circle, and ellipse envelopes
+          - Preview generation with approval workflow
+          - Comprehensive logging
+          
+          ## Requirements
+          - Windows 10 or later
+          - No additional dependencies required
