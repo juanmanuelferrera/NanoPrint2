@@ -4,10 +4,17 @@ block_cipher = None
 
 a = Analysis(
     ['nanofiche_image_prep.py'],
-    pathex=[],
+    pathex=['.'],
     binaries=[],
     datas=[],
-    hiddenimports=['PIL._tkinter_finder'],
+    hiddenimports=[
+        'PIL._tkinter_finder',
+        'PIL._imaging',
+        'tkinter',
+        'tkinter.ttk',
+        'tkinter.filedialog',
+        'tkinter.messagebox'
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

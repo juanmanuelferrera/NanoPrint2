@@ -14,10 +14,10 @@ jobs:
     runs-on: windows-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
     
@@ -26,16 +26,25 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
+    - name: Debug - List files
+      run: |
+        echo "Current directory:"
+        dir
+        echo "Python version:"
+        python --version
+        echo "Installed packages:"
+        pip list
+    
     - name: Build EXE with PyInstaller
       run: |
-        pyinstaller nanofiche_image_prep.spec
+        pyinstaller nanofiche_image_prep.spec --clean
     
     - name: Test executable
       run: |
         dist\NanoFiche_Image_Prep.exe --version || echo "No version flag implemented"
     
     - name: Upload artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: NanoFiche-Image-Prep-Windows
         path: dist/NanoFiche_Image_Prep.exe
