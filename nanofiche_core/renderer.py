@@ -23,7 +23,7 @@ class NanoFicheRenderer:
         self.logger = logging.getLogger(__name__)
     
     def generate_preview(self, image_bins: List[ImageBin], packing_result: PackingResult, 
-                        output_path: Path, max_dimension: int = 4000):
+                        output_path: Path, max_dimension: int = 4000, color: bool = True):
         """
         Generate preview TIFF with maximum dimension constraint.
         
@@ -32,8 +32,12 @@ class NanoFicheRenderer:
             packing_result: Packing layout result
             output_path: Output path for preview TIFF
             max_dimension: Maximum pixel dimension for preview (default 4000)
+            color: Keep preview in color (True) or convert to grayscale (False)
         """
-        self.logger.info(f"Generating preview TIFF: {output_path}")
+        mode = 'RGB' if color else 'L'
+        bg_color = 'white' if color else 255
+        
+        self.logger.info(f"Generating preview TIFF: {output_path} ({'color' if color else 'grayscale'})")
         
         # Calculate scale factor to fit within max dimension
         canvas_width = packing_result.canvas_width
@@ -53,7 +57,7 @@ class NanoFicheRenderer:
         self.logger.info(f"Preview dimensions: {preview_width}x{preview_height}")
         
         # Create canvas
-        canvas = Image.new('RGB', (preview_width, preview_height), color='white')
+        canvas = Image.new(mode, (preview_width, preview_height), color=bg_color)
         
         # Place images
         self.logger.info(f"Preview: Placing {len(image_bins)} images")
@@ -68,6 +72,12 @@ class NanoFicheRenderer:
             try:
                 # Load and resize image
                 with Image.open(image_bin.file_path) as img:
+                    # Convert to appropriate mode for preview
+                    if not color and img.mode != 'L':
+                        img = img.convert('L')
+                    elif color and img.mode == 'L':
+                        img = img.convert('RGB')
+                    
                     # Scale position and size
                     scaled_x = int(x * scale_factor)
                     scaled_y = int(y * scale_factor)
@@ -108,7 +118,7 @@ class NanoFicheRenderer:
         self.logger.info(f"Preview TIFF saved: {output_path}")
     
     def generate_full_tiff(self, image_bins: List[ImageBin], packing_result: PackingResult,
-                          output_path: Path, log_path: Path, project_name: str, approved: bool = True):
+                          output_path: Path, log_path: Path, project_name: str, approved: bool = True, grayscale: bool = True):
         """
         Generate full resolution TIFF output.
         
@@ -119,9 +129,13 @@ class NanoFicheRenderer:
             log_path: Path for log file
             project_name: Project name for logging
             approved: Whether this was user-approved
+            grayscale: Generate 8-bit grayscale instead of RGB (saves 66% memory)
         """
         start_time = datetime.now()
-        self.logger.info(f"Generating full resolution TIFF: {output_path}")
+        mode = "L" if grayscale else "RGB"
+        bg_color = 255 if grayscale else 'white'
+        
+        self.logger.info(f"Generating full resolution TIFF: {output_path} (mode: {mode})")
         
         try:
             # Create full resolution canvas
@@ -130,12 +144,18 @@ class NanoFicheRenderer:
             
             self.logger.info(f"Full canvas dimensions: {canvas_width}x{canvas_height}")
             
-            # Check for reasonable size limits
+            # Check for reasonable size limits and calculate memory usage
             total_pixels = canvas_width * canvas_height
+            bytes_per_pixel = 1 if grayscale else 3
+            memory_mb = (total_pixels * bytes_per_pixel) / (1024 * 1024)
+            memory_gb = memory_mb / 1024
+            
             if total_pixels > 500_000_000:  # 500M pixels
                 self.logger.warning(f"Large canvas size: {total_pixels:,} pixels")
             
-            canvas = Image.new('RGB', (canvas_width, canvas_height), color='white')
+            self.logger.info(f"Estimated memory usage: {memory_gb:.2f} GB ({'grayscale' if grayscale else 'RGB'})")
+            
+            canvas = Image.new(mode, (canvas_width, canvas_height), color=bg_color)
             
             # Place images at full resolution
             images_placed = 0
@@ -151,6 +171,12 @@ class NanoFicheRenderer:
                 try:
                     # Load image
                     with Image.open(image_bin.file_path) as img:
+                        # Convert to grayscale if needed
+                        if grayscale and img.mode != 'L':
+                            img = img.convert('L')
+                        elif not grayscale and img.mode == 'L':
+                            img = img.convert('RGB')
+                        
                         # Resize image to fit within bin (maintain aspect ratio)
                         img_resized = self._resize_image_to_fit(img, packing_result.bin_width, packing_result.bin_height)
                         
