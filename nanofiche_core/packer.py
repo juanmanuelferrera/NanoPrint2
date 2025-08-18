@@ -95,23 +95,31 @@ class NanoFichePacker:
         rows = side
         columns = side
         
-        canvas_width = columns * self.bin_width
-        canvas_height = rows * self.bin_height
+        # Calculate grid dimensions
+        grid_width = columns * self.bin_width
+        grid_height = rows * self.bin_height
         
-        # Generate placements
+        # Force square canvas - use the larger dimension
+        canvas_size = max(grid_width, grid_height)
+        
+        # Center the grid in the square canvas
+        offset_x = (canvas_size - grid_width) // 2
+        offset_y = (canvas_size - grid_height) // 2
+        
+        # Generate placements (centered in square canvas)
         placements = []
         for i in range(num_bins):
             row = i // columns
             col = i % columns
-            x = col * self.bin_width
-            y = row * self.bin_height
+            x = offset_x + col * self.bin_width
+            y = offset_y + row * self.bin_height
             placements.append((x, y))
         
         return PackingResult(
             rows=rows,
             columns=columns,
-            canvas_width=canvas_width,
-            canvas_height=canvas_height,
+            canvas_width=canvas_size,
+            canvas_height=canvas_size,
             placements=placements,
             envelope_shape=EnvelopeShape.SQUARE,
             total_bins=num_bins,
@@ -166,36 +174,55 @@ class NanoFichePacker:
         )
     
     def _pack_circle(self, num_bins: int) -> PackingResult:
-        """Pack bins into a circular envelope."""
-        # Use spiral packing or concentric circles for optimal arrangement
-        # For simplicity, start with square grid inscribed in circle
+        """Pack bins into a circular envelope using circular-constrained grid layout."""
         
-        # Estimate required radius
+        # Start with an estimate and iteratively find the best fit
+        # We want a circle that can fit all bins while maintaining circular shape
+        
+        # Calculate area needed and estimate circle size
         bin_area = self.bin_width * self.bin_height
-        total_area = num_bins * bin_area
-        radius = math.sqrt(total_area / math.pi)
+        total_area = num_bins * bin_area * 1.5  # Add 50% overhead for circular packing
+        estimated_radius = math.sqrt(total_area / math.pi)
         
-        # Find grid that fits in circle
-        diameter = 2 * radius
-        max_cols = int(diameter / self.bin_width)
-        max_rows = int(diameter / self.bin_height)
+        # Try different grid arrangements to find one that fits in circle
+        best_radius = None
+        best_grid_size = None
         
-        # Adjust to fit all bins
-        while max_cols * max_rows < num_bins:
-            radius *= 1.1
-            diameter = 2 * radius
-            max_cols = int(diameter / self.bin_width)
-            max_rows = int(diameter / self.bin_height)
+        # Try grid sizes from square down to more elongated rectangles
+        for grid_side in range(math.ceil(math.sqrt(num_bins)), max(1, int(math.sqrt(num_bins) * 0.5)), -1):
+            rows = math.ceil(num_bins / grid_side)
+            cols = grid_side
+            
+            # Calculate inscribed rectangle that fits in circle
+            grid_width = cols * self.bin_width
+            grid_height = rows * self.bin_height
+            
+            # Find minimum radius to fit this grid as inscribed rectangle
+            # Use diagonal divided by 2, then add margin
+            grid_diagonal = math.sqrt(grid_width**2 + grid_height**2)
+            required_radius = grid_diagonal / 2 * 1.2  # 20% margin
+            
+            if best_radius is None or required_radius < best_radius:
+                best_radius = required_radius
+                best_grid_size = (rows, cols)
         
-        canvas_size = int(diameter)
+        if best_grid_size is None:
+            # Fallback to square
+            side = math.ceil(math.sqrt(num_bins))
+            best_grid_size = (side, side)
+            grid_diagonal = math.sqrt((side * self.bin_width)**2 + (side * self.bin_height)**2)
+            best_radius = grid_diagonal / 2 * 1.2
+        
+        canvas_size = int(2 * best_radius)
         center_x = center_y = canvas_size // 2
+        rows, cols = best_grid_size
         
-        # Generate placements in spiral pattern
-        placements = self._generate_spiral_placements(num_bins, center_x, center_y, radius)
+        # Generate circular grid placements
+        placements = self._generate_circular_grid_placements(num_bins, rows, cols, center_x, center_y)
         
         return PackingResult(
-            rows=max_rows,
-            columns=max_cols,
+            rows=rows,
+            columns=cols,
             canvas_width=canvas_size,
             canvas_height=canvas_size,
             placements=placements,
@@ -206,16 +233,15 @@ class NanoFichePacker:
         )
     
     def _pack_ellipse(self, num_bins: int, aspect_x: float, aspect_y: float) -> PackingResult:
-        """Pack bins into an elliptical envelope."""
-        # Similar to circle but with different radii
-        bin_area = self.bin_width * self.bin_height
-        total_area = num_bins * bin_area
+        """Pack bins into an elliptical envelope with constrained placement."""
         
-        # Calculate ellipse parameters
+        # Calculate ellipse parameters with proper sizing
+        bin_area = self.bin_width * self.bin_height
+        total_area = num_bins * bin_area * 1.8  # More overhead for ellipse packing
+        
         aspect_ratio = aspect_x / aspect_y
         
-        # Estimate radii
-        # Area = π * a * b, where a/b = aspect_ratio
+        # Calculate ellipse radii: Area = π * a * b, where a/b = aspect_ratio
         b = math.sqrt(total_area / (math.pi * aspect_ratio))
         a = b * aspect_ratio
         
@@ -224,12 +250,42 @@ class NanoFichePacker:
         center_x = canvas_width // 2
         center_y = canvas_height // 2
         
-        # Generate placements in elliptical pattern
-        placements = self._generate_elliptical_placements(num_bins, center_x, center_y, a, b)
+        # Use different grid approach than rectangle - optimize for ellipse shape
+        # Try to fit more bins in the middle (wider part) of ellipse
+        target_aspect = aspect_ratio
+        
+        # Find grid that works well for ellipse (different from rectangle approach)
+        best_rows = best_cols = None
+        min_waste = float('inf')
+        
+        # Try various grid arrangements, favoring those that match ellipse shape
+        for cols in range(int(math.sqrt(num_bins) * 0.7), int(math.sqrt(num_bins) * 1.8)):
+            rows = math.ceil(num_bins / cols)
+            
+            grid_aspect = (cols * self.bin_width) / (rows * self.bin_height)
+            aspect_diff = abs(grid_aspect - target_aspect)
+            
+            # Prefer grids that match ellipse aspect ratio better
+            waste = aspect_diff + (cols * rows - num_bins) / num_bins
+            
+            if waste < min_waste:
+                min_waste = waste
+                best_rows = rows
+                best_cols = cols
+        
+        if best_rows is None:
+            # Fallback
+            side = math.ceil(math.sqrt(num_bins))
+            best_rows = best_cols = side
+        
+        # Generate elliptical placements with constraint checking
+        placements = self._generate_elliptical_constrained_placements(
+            num_bins, best_rows, best_cols, center_x, center_y, a, b
+        )
         
         return PackingResult(
-            rows=int(canvas_height / self.bin_height),
-            columns=int(canvas_width / self.bin_width),
+            rows=best_rows,
+            columns=best_cols,
             canvas_width=canvas_width,
             canvas_height=canvas_height,
             placements=placements,
@@ -291,14 +347,146 @@ class NanoFichePacker:
         
         return placements
     
-    def _generate_elliptical_placements(self, num_bins: int, center_x: int, center_y: int, a: float, b: float) -> List[Tuple[int, int]]:
-        """Generate placement pattern for elliptical envelope."""
+    def _generate_elliptical_constrained_placements(self, num_bins: int, rows: int, cols: int,
+                                                  center_x: int, center_y: int, a: float, b: float) -> List[Tuple[int, int]]:
+        """Generate elliptical placement that only places bins within ellipse boundary."""
         placements = []
         
-        # Similar to spiral but with elliptical coordinates
+        # Calculate grid dimensions
+        grid_width = cols * self.bin_width
+        grid_height = rows * self.bin_height
+        
+        # Center the grid
+        start_x = center_x - grid_width // 2
+        start_y = center_y - grid_height // 2
+        
+        bins_placed = 0
+        
+        # Place bins row by row, but only if they fit in ellipse
+        for row in range(rows):
+            if bins_placed >= num_bins:
+                break
+                
+            for col in range(cols):
+                if bins_placed >= num_bins:
+                    break
+                
+                # Calculate bin position
+                x = start_x + col * self.bin_width
+                y = start_y + row * self.bin_height
+                
+                # Calculate bin center
+                bin_center_x = x + self.bin_width // 2
+                bin_center_y = y + self.bin_height // 2
+                
+                # Check if bin center is within ellipse
+                # Ellipse equation: ((x-cx)/a)² + ((y-cy)/b)² ≤ 1
+                ellipse_test = ((bin_center_x - center_x) / a) ** 2 + ((bin_center_y - center_y) / b) ** 2
+                
+                if ellipse_test <= 0.8:  # Use 80% of ellipse for better fit
+                    placements.append((x, y))
+                    bins_placed += 1
+        
+        # If we haven't placed all bins, place remaining ones in spiral within ellipse
+        if bins_placed < num_bins:
+            remaining_placements = self._generate_spiral_placements_elliptical(
+                num_bins - bins_placed, center_x, center_y, a * 0.7, b * 0.7, start_index=bins_placed
+            )
+            placements.extend(remaining_placements)
+        
+        return placements
+    
+    def _generate_elliptical_placements(self, num_bins: int, center_x: int, center_y: int, a: float, b: float) -> List[Tuple[int, int]]:
+        """Generate placement pattern for elliptical envelope with simple grid layout."""
+        placements = []
+        
+        # Use simple rectangular grid that fits within the ellipse, similar to rectangle packing
+        # Calculate optimal grid arrangement first
+        target_aspect = a / b
+        best_rows, best_cols = self._find_optimal_grid(num_bins, target_aspect)
+        
+        # Calculate grid dimensions
+        grid_width = best_cols * self.bin_width
+        grid_height = best_rows * self.bin_height
+        
+        # Center the grid in the ellipse canvas
+        start_x = center_x - grid_width // 2
+        start_y = center_y - grid_height // 2
+        
+        # Place bins in simple grid pattern (left-to-right, top-to-bottom)
         for i in range(num_bins):
-            angle = i * 0.5
-            r = (i / num_bins) * 0.8  # Relative radius
+            row = i // best_cols
+            col = i % best_cols
+            
+            x = start_x + col * self.bin_width
+            y = start_y + row * self.bin_height
+            
+            # Ensure within canvas bounds
+            x = max(0, min(x, center_x * 2 - self.bin_width))
+            y = max(0, min(y, center_y * 2 - self.bin_height))
+            
+            placements.append((x, y))
+        
+        return placements
+    
+    def _generate_elliptical_constrained_placements(self, num_bins: int, rows: int, cols: int,
+                                                  center_x: int, center_y: int, a: float, b: float) -> List[Tuple[int, int]]:
+        """Generate elliptical placement that only places bins within ellipse boundary."""
+        placements = []
+        
+        # Calculate grid dimensions
+        grid_width = cols * self.bin_width
+        grid_height = rows * self.bin_height
+        
+        # Center the grid
+        start_x = center_x - grid_width // 2
+        start_y = center_y - grid_height // 2
+        
+        bins_placed = 0
+        
+        # Place bins row by row, but only if they fit in ellipse
+        for row in range(rows):
+            if bins_placed >= num_bins:
+                break
+                
+            for col in range(cols):
+                if bins_placed >= num_bins:
+                    break
+                
+                # Calculate bin position
+                x = start_x + col * self.bin_width
+                y = start_y + row * self.bin_height
+                
+                # Calculate bin center
+                bin_center_x = x + self.bin_width // 2
+                bin_center_y = y + self.bin_height // 2
+                
+                # Check if bin center is within ellipse
+                # Ellipse equation: ((x-cx)/a)² + ((y-cy)/b)² ≤ 1
+                ellipse_test = ((bin_center_x - center_x) / a) ** 2 + ((bin_center_y - center_y) / b) ** 2
+                
+                if ellipse_test <= 0.8:  # Use 80% of ellipse for better fit
+                    placements.append((x, y))
+                    bins_placed += 1
+        
+        # If we haven't placed all bins, place remaining ones in spiral within ellipse
+        if bins_placed < num_bins:
+            remaining_placements = self._generate_spiral_placements_elliptical(
+                num_bins - bins_placed, center_x, center_y, a * 0.7, b * 0.7, start_index=bins_placed
+            )
+            placements.extend(remaining_placements)
+        
+        return placements
+    
+    def _generate_spiral_placements_elliptical(self, num_bins: int, center_x: int, center_y: int, 
+                                             a: float, b: float, start_index: int = 0) -> List[Tuple[int, int]]:
+        """Generate spiral placement pattern for remaining bins in elliptical envelope."""
+        placements = []
+        
+        for i in range(num_bins):
+            # Use spiral pattern similar to circle but with elliptical scaling
+            angle = (start_index + i) * 0.5
+            r = ((start_index + i) / (start_index + num_bins)) * 0.8
             
             # Convert to elliptical coordinates
             x = center_x + int(r * a * math.cos(angle)) - self.bin_width // 2
@@ -309,5 +497,205 @@ class NanoFichePacker:
             y = max(0, min(y, center_y * 2 - self.bin_height))
             
             placements.append((x, y))
+        
+        return placements
+    
+    def _generate_elliptical_constrained_placements(self, num_bins: int, rows: int, cols: int,
+                                                  center_x: int, center_y: int, a: float, b: float) -> List[Tuple[int, int]]:
+        """Generate elliptical placement that only places bins within ellipse boundary."""
+        placements = []
+        
+        # Calculate grid dimensions
+        grid_width = cols * self.bin_width
+        grid_height = rows * self.bin_height
+        
+        # Center the grid
+        start_x = center_x - grid_width // 2
+        start_y = center_y - grid_height // 2
+        
+        bins_placed = 0
+        
+        # Place bins row by row, but only if they fit in ellipse
+        for row in range(rows):
+            if bins_placed >= num_bins:
+                break
+                
+            for col in range(cols):
+                if bins_placed >= num_bins:
+                    break
+                
+                # Calculate bin position
+                x = start_x + col * self.bin_width
+                y = start_y + row * self.bin_height
+                
+                # Calculate bin center
+                bin_center_x = x + self.bin_width // 2
+                bin_center_y = y + self.bin_height // 2
+                
+                # Check if bin center is within ellipse
+                # Ellipse equation: ((x-cx)/a)² + ((y-cy)/b)² ≤ 1
+                ellipse_test = ((bin_center_x - center_x) / a) ** 2 + ((bin_center_y - center_y) / b) ** 2
+                
+                if ellipse_test <= 0.8:  # Use 80% of ellipse for better fit
+                    placements.append((x, y))
+                    bins_placed += 1
+        
+        # If we haven't placed all bins, place remaining ones in spiral within ellipse
+        if bins_placed < num_bins:
+            remaining_placements = self._generate_spiral_placements_elliptical(
+                num_bins - bins_placed, center_x, center_y, a * 0.7, b * 0.7, start_index=bins_placed
+            )
+            placements.extend(remaining_placements)
+        
+        return placements
+    
+    def _generate_circular_grid_placements(self, num_bins: int, rows: int, cols: int, 
+                                         center_x: int, center_y: int) -> List[Tuple[int, int]]:
+        """Generate circular layout using row-by-row approach with variable width per row."""
+        
+        # Calculate minimum radius needed for all images
+        bin_area = self.bin_width * self.bin_height
+        total_area = num_bins * bin_area
+        required_radius = math.sqrt(total_area / math.pi) * 1.1  # 10% padding
+        
+        # Use the provided canvas size or calculated size, whichever accommodates all images
+        canvas_radius = center_x  # Radius of the provided canvas
+        working_radius = min(required_radius, canvas_radius * 0.9)  # Use 90% of available space
+        
+        self.logger.info(f"Circular packing: canvas_radius={canvas_radius:.1f}, working_radius={working_radius:.1f}")
+        
+        placements = []
+        images_placed = 0
+        
+        # Go row by row from top to bottom
+        canvas_size = center_x * 2
+        current_y = 0
+        
+        while images_placed < num_bins and current_y + self.bin_height <= canvas_size:
+            # Calculate row center Y position
+            row_center_y = current_y + self.bin_height // 2
+            
+            # Calculate distance from canvas center
+            y_offset_from_center = abs(row_center_y - center_y)
+            
+            # Check if this row intersects the working circle
+            if y_offset_from_center <= working_radius:
+                # Calculate circle width at this Y position
+                x_half_width = math.sqrt(working_radius**2 - y_offset_from_center**2)
+                row_width = int(2 * x_half_width)
+                
+                # Calculate how many images fit in this row
+                images_in_row = max(0, int(row_width / self.bin_width))
+                
+                # Don't exceed remaining images
+                images_in_row = min(images_in_row, num_bins - images_placed)
+                
+                if images_in_row > 0:
+                    # Center the row within the available width
+                    row_start_x = center_x - (images_in_row * self.bin_width) // 2
+                    
+                    # Place images in this row (left to right)
+                    for col in range(images_in_row):
+                        x = row_start_x + col * self.bin_width
+                        
+                        # Ensure within canvas bounds
+                        x = max(0, min(x, canvas_size - self.bin_width))
+                        y = max(0, min(current_y, canvas_size - self.bin_height))
+                        
+                        placements.append((x, y))
+                        images_placed += 1
+                        
+                        if images_placed >= num_bins:
+                            break
+            
+            current_y += self.bin_height
+            
+            # Safety break
+            if current_y > canvas_size:
+                break
+        
+        # If we haven't placed all images, place remaining ones with looser circular constraint
+        if images_placed < num_bins:
+            self.logger.info(f"Placed {images_placed}/{num_bins} in tight circular area, placing remainder with looser constraint")
+            
+            # Use 95% of canvas radius for remaining images
+            looser_radius = canvas_radius * 0.95
+            
+            # Continue with remaining rows
+            while images_placed < num_bins and current_y + self.bin_height <= canvas_size:
+                row_center_y = current_y + self.bin_height // 2
+                y_offset_from_center = abs(row_center_y - center_y)
+                
+                if y_offset_from_center <= looser_radius:
+                    x_half_width = math.sqrt(looser_radius**2 - y_offset_from_center**2)
+                    row_width = int(2 * x_half_width)
+                    images_in_row = max(0, int(row_width / self.bin_width))
+                    images_in_row = min(images_in_row, num_bins - images_placed)
+                    
+                    if images_in_row > 0:
+                        row_start_x = center_x - (images_in_row * self.bin_width) // 2
+                        
+                        for col in range(images_in_row):
+                            x = row_start_x + col * self.bin_width
+                            x = max(0, min(x, canvas_size - self.bin_width))
+                            y = max(0, min(current_y, canvas_size - self.bin_height))
+                            
+                            placements.append((x, y))
+                            images_placed += 1
+                            
+                            if images_placed >= num_bins:
+                                break
+                
+                current_y += self.bin_height
+        
+        self.logger.info(f"Circular packing completed: {len(placements)}/{num_bins} images placed")
+        return placements
+    
+    def _generate_elliptical_constrained_placements(self, num_bins: int, rows: int, cols: int,
+                                                  center_x: int, center_y: int, a: float, b: float) -> List[Tuple[int, int]]:
+        """Generate elliptical placement that only places bins within ellipse boundary."""
+        placements = []
+        
+        # Calculate grid dimensions
+        grid_width = cols * self.bin_width
+        grid_height = rows * self.bin_height
+        
+        # Center the grid
+        start_x = center_x - grid_width // 2
+        start_y = center_y - grid_height // 2
+        
+        bins_placed = 0
+        
+        # Place bins row by row, but only if they fit in ellipse
+        for row in range(rows):
+            if bins_placed >= num_bins:
+                break
+                
+            for col in range(cols):
+                if bins_placed >= num_bins:
+                    break
+                
+                # Calculate bin position
+                x = start_x + col * self.bin_width
+                y = start_y + row * self.bin_height
+                
+                # Calculate bin center
+                bin_center_x = x + self.bin_width // 2
+                bin_center_y = y + self.bin_height // 2
+                
+                # Check if bin center is within ellipse
+                # Ellipse equation: ((x-cx)/a)² + ((y-cy)/b)² ≤ 1
+                ellipse_test = ((bin_center_x - center_x) / a) ** 2 + ((bin_center_y - center_y) / b) ** 2
+                
+                if ellipse_test <= 0.8:  # Use 80% of ellipse for better fit
+                    placements.append((x, y))
+                    bins_placed += 1
+        
+        # If we haven't placed all bins, place remaining ones in spiral within ellipse
+        if bins_placed < num_bins:
+            remaining_placements = self._generate_spiral_placements_elliptical(
+                num_bins - bins_placed, center_x, center_y, a * 0.7, b * 0.7, start_index=bins_placed
+            )
+            placements.extend(remaining_placements)
         
         return placements
