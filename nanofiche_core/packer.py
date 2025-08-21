@@ -233,11 +233,11 @@ class NanoFichePacker:
         )
     
     def _pack_ellipse(self, num_bins: int, aspect_x: float, aspect_y: float) -> PackingResult:
-        """Pack bins into an elliptical envelope with constrained placement."""
+        """Pack bins into an elliptical envelope using column optimization like circle method."""
         
-        # Calculate ellipse parameters with proper sizing
+        # Calculate area needed and estimate ellipse size
         bin_area = self.bin_width * self.bin_height
-        total_area = num_bins * bin_area * 1.8  # More overhead for ellipse packing
+        total_area = num_bins * bin_area * 1.6  # Overhead for elliptical packing
         
         aspect_ratio = aspect_x / aspect_y
         
@@ -245,47 +245,75 @@ class NanoFichePacker:
         b = math.sqrt(total_area / (math.pi * aspect_ratio))
         a = b * aspect_ratio
         
+        # Try different grid arrangements to find one that fits efficiently in ellipse
+        best_radii = None
+        best_grid_size = None
+        best_efficiency = 0
+        
+        # Try grid sizes with column optimization like circle method
+        max_grid_side = int(math.sqrt(num_bins) * 1.5)
+        min_grid_side = max(1, int(math.sqrt(num_bins) * 0.6))
+        
+        for cols in range(min_grid_side, max_grid_side + 1):
+            rows = math.ceil(num_bins / cols)
+            
+            # Calculate grid dimensions
+            grid_width = cols * self.bin_width
+            grid_height = rows * self.bin_height
+            
+            # For ellipse, find minimum radii to fit this grid
+            # Use inscribed rectangle approach but adapted for ellipse
+            grid_aspect = grid_width / grid_height
+            
+            # Calculate required ellipse radii to inscribe this rectangle
+            # For rectangle (w,h) inscribed in ellipse (a,b): w²/a² + h²/b² = 4
+            # We know aspect_ratio = a/b, so solve for a and b
+            if aspect_ratio > 1:  # Wider ellipse
+                required_b = grid_height / 2 * 1.1  # 10% margin
+                required_a = required_b * aspect_ratio
+            else:  # Taller ellipse
+                required_a = grid_width / 2 * 1.1  # 10% margin
+                required_b = required_a / aspect_ratio
+            
+            # Calculate efficiency (bins per unit area)
+            ellipse_area = math.pi * required_a * required_b
+            efficiency = num_bins / ellipse_area
+            
+            # Prefer arrangements that match the target aspect ratio better
+            aspect_match = 1.0 / (1.0 + abs(grid_aspect - aspect_ratio))
+            combined_score = efficiency * aspect_match
+            
+            if combined_score > best_efficiency:
+                best_efficiency = combined_score
+                best_radii = (required_a, required_b)
+                best_grid_size = (rows, cols)
+        
+        if best_grid_size is None:
+            # Fallback to square arrangement
+            side = math.ceil(math.sqrt(num_bins))
+            best_grid_size = (side, side)
+            grid_diagonal = math.sqrt((side * self.bin_width)**2 + (side * self.bin_height)**2)
+            avg_radius = grid_diagonal / 2 * 1.2
+            if aspect_ratio > 1:
+                best_radii = (avg_radius * aspect_ratio, avg_radius)
+            else:
+                best_radii = (avg_radius, avg_radius / aspect_ratio)
+        
+        a, b = best_radii
         canvas_width = int(2 * a)
         canvas_height = int(2 * b)
         center_x = canvas_width // 2
         center_y = canvas_height // 2
-        
-        # Use different grid approach than rectangle - optimize for ellipse shape
-        # Try to fit more bins in the middle (wider part) of ellipse
-        target_aspect = aspect_ratio
-        
-        # Find grid that works well for ellipse (different from rectangle approach)
-        best_rows = best_cols = None
-        min_waste = float('inf')
-        
-        # Try various grid arrangements, favoring those that match ellipse shape
-        for cols in range(int(math.sqrt(num_bins) * 0.7), int(math.sqrt(num_bins) * 1.8)):
-            rows = math.ceil(num_bins / cols)
-            
-            grid_aspect = (cols * self.bin_width) / (rows * self.bin_height)
-            aspect_diff = abs(grid_aspect - target_aspect)
-            
-            # Prefer grids that match ellipse aspect ratio better
-            waste = aspect_diff + (cols * rows - num_bins) / num_bins
-            
-            if waste < min_waste:
-                min_waste = waste
-                best_rows = rows
-                best_cols = cols
-        
-        if best_rows is None:
-            # Fallback
-            side = math.ceil(math.sqrt(num_bins))
-            best_rows = best_cols = side
+        rows, cols = best_grid_size
         
         # Generate elliptical placements with constraint checking
         placements = self._generate_elliptical_constrained_placements(
-            num_bins, best_rows, best_cols, center_x, center_y, a, b
+            num_bins, rows, cols, center_x, center_y, a, b
         )
         
         return PackingResult(
-            rows=best_rows,
-            columns=best_cols,
+            rows=rows,
+            columns=cols,
             canvas_width=canvas_width,
             canvas_height=canvas_height,
             placements=placements,
@@ -551,18 +579,85 @@ class NanoFichePacker:
     
     def _generate_circular_grid_placements(self, num_bins: int, rows: int, cols: int, 
                                          center_x: int, center_y: int) -> List[Tuple[int, int]]:
-        """Generate circular layout using row-by-row approach with variable width per row."""
+        """Generate circular layout using row-by-row approach optimized for minimal envelope area."""
         
-        # Calculate minimum radius needed for all images
+        # Calculate theoretical minimum radius for perfect circle packing
         bin_area = self.bin_width * self.bin_height
         total_area = num_bins * bin_area
-        required_radius = math.sqrt(total_area / math.pi) * 1.1  # 10% padding
+        theoretical_radius = math.sqrt(total_area / math.pi)
         
-        # Use the provided canvas size or calculated size, whichever accommodates all images
-        canvas_radius = center_x  # Radius of the provided canvas
-        working_radius = min(required_radius, canvas_radius * 0.9)  # Use 90% of available space
+        # Find absolute minimum radius by iterative reduction
+        canvas_radius = center_x
         
-        self.logger.info(f"Circular packing: canvas_radius={canvas_radius:.1f}, working_radius={working_radius:.1f}")
+        # Start with theoretical minimum and incrementally increase until all images fit
+        current_radius = theoretical_radius
+        radius_step = 50  # Start with 50-pixel steps
+        
+        best_placements = None
+        best_radius = None
+        
+        # First, find a working radius
+        max_attempts = 100
+        attempts = 0
+        
+        while best_placements is None and attempts < max_attempts:
+            test_placements = self._generate_circular_row_placements(
+                num_bins, current_radius, center_x, center_y
+            )
+            
+            if len(test_placements) == num_bins:
+                best_placements = test_placements
+                best_radius = current_radius
+                break
+            else:
+                current_radius += radius_step
+                attempts += 1
+        
+        # Now that we have a working radius, refine it downward
+        if best_radius is not None:
+            # Binary search for the minimum working radius
+            min_radius = theoretical_radius
+            max_radius = best_radius
+            
+            while max_radius - min_radius > 1:
+                test_radius = (min_radius + max_radius) / 2
+                test_placements = self._generate_circular_row_placements(
+                    num_bins, test_radius, center_x, center_y
+                )
+                
+                if len(test_placements) == num_bins:
+                    # This radius works, try smaller
+                    max_radius = test_radius
+                    best_radius = test_radius
+                    best_placements = test_placements
+                else:
+                    # This radius too small, increase minimum
+                    min_radius = test_radius
+        
+        # Calculate final envelope ratio
+        if best_radius is not None:
+            envelope_area = math.pi * best_radius ** 2
+            best_envelope_ratio = envelope_area / total_area
+        
+        # If no optimal solution found, use fallback with very tight packing
+        if best_placements is None:
+            canvas_radius = center_x
+            working_radius = theoretical_radius * 1.05  # Very tight fallback
+            best_placements = self._generate_circular_row_placements(
+                num_bins, working_radius, center_x, center_y
+            )
+            envelope_area = math.pi * working_radius ** 2
+            best_envelope_ratio = envelope_area / total_area
+            best_radius = working_radius
+        
+        self.logger.info(f"Circular packing: envelope_ratio={best_envelope_ratio:.2f}, "
+                        f"working_radius={best_radius:.1f}")
+        
+        return best_placements
+    
+    def _generate_circular_row_placements(self, num_bins: int, working_radius: float,
+                                        center_x: int, center_y: int) -> List[Tuple[int, int]]:
+        """Generate row-by-row circular placement for given radius."""
         
         placements = []
         images_placed = 0
@@ -580,63 +675,29 @@ class NanoFichePacker:
             
             # Check if this row intersects the working circle
             if y_offset_from_center <= working_radius:
-                # Calculate circle width at this Y position
-                x_half_width = math.sqrt(working_radius**2 - y_offset_from_center**2)
-                row_width = int(2 * x_half_width)
-                
-                # Calculate how many images fit in this row
-                images_in_row = max(0, int(row_width / self.bin_width))
-                
-                # Don't exceed remaining images
-                images_in_row = min(images_in_row, num_bins - images_placed)
-                
-                if images_in_row > 0:
-                    # Center the row within the available width
-                    row_start_x = center_x - (images_in_row * self.bin_width) // 2
-                    
-                    # Place images in this row (left to right)
-                    for col in range(images_in_row):
-                        x = row_start_x + col * self.bin_width
-                        
-                        # Ensure within canvas bounds
-                        x = max(0, min(x, canvas_size - self.bin_width))
-                        y = max(0, min(current_y, canvas_size - self.bin_height))
-                        
-                        placements.append((x, y))
-                        images_placed += 1
-                        
-                        if images_placed >= num_bins:
-                            break
-            
-            current_y += self.bin_height
-            
-            # Safety break
-            if current_y > canvas_size:
-                break
-        
-        # If we haven't placed all images, place remaining ones with looser circular constraint
-        if images_placed < num_bins:
-            self.logger.info(f"Placed {images_placed}/{num_bins} in tight circular area, placing remainder with looser constraint")
-            
-            # Use 95% of canvas radius for remaining images
-            looser_radius = canvas_radius * 0.95
-            
-            # Continue with remaining rows
-            while images_placed < num_bins and current_y + self.bin_height <= canvas_size:
-                row_center_y = current_y + self.bin_height // 2
-                y_offset_from_center = abs(row_center_y - center_y)
-                
-                if y_offset_from_center <= looser_radius:
-                    x_half_width = math.sqrt(looser_radius**2 - y_offset_from_center**2)
+                # Calculate circle width at this Y position using circle equation
+                if y_offset_from_center < working_radius:
+                    x_half_width = math.sqrt(working_radius**2 - y_offset_from_center**2)
                     row_width = int(2 * x_half_width)
-                    images_in_row = max(0, int(row_width / self.bin_width))
+                    
+                    # Calculate how many images fit in this row with maximum packing
+                    # Use 100% of theoretical capacity for tightest fit
+                    theoretical_images = row_width / self.bin_width
+                    images_in_row = max(0, int(theoretical_images * 1.0))
+                    
+                    # Don't exceed remaining images
                     images_in_row = min(images_in_row, num_bins - images_placed)
                     
                     if images_in_row > 0:
-                        row_start_x = center_x - (images_in_row * self.bin_width) // 2
+                        # Center the row within the available width
+                        actual_row_width = images_in_row * self.bin_width
+                        row_start_x = center_x - actual_row_width // 2
                         
+                        # Place images in this row (left to right)
                         for col in range(images_in_row):
                             x = row_start_x + col * self.bin_width
+                            
+                            # Ensure within canvas bounds
                             x = max(0, min(x, canvas_size - self.bin_width))
                             y = max(0, min(current_y, canvas_size - self.bin_height))
                             
@@ -645,10 +706,13 @@ class NanoFichePacker:
                             
                             if images_placed >= num_bins:
                                 break
-                
-                current_y += self.bin_height
+            
+            current_y += self.bin_height
+            
+            # Safety break
+            if current_y > canvas_size:
+                break
         
-        self.logger.info(f"Circular packing completed: {len(placements)}/{num_bins} images placed")
         return placements
     
     def _generate_elliptical_constrained_placements(self, num_bins: int, rows: int, cols: int,
