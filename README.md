@@ -19,12 +19,18 @@ Windows application for optimal bin packing of raster images into various envelo
   - Rectangle (with custom aspect ratio)
   - Circle
   - Ellipse (with custom aspect ratio)
+- **Advanced Reserved Spaces**: 
+  - Fixed pixel-based reserves (e.g., 5000×5000 center square)
+  - Percentage-based shaped reserves (circle, square, rectangle)
+  - Dual exclusion zones (corner + center combinations)
 - **Smart Validation**: Automatic checking of image dimensions against bin limits
 - **Preview System**: Generate downsampled preview (max 4000px) before final rendering
 - **Approval Workflow**: Review layouts before generating full resolution TIFF
 - **Comprehensive Logging**: Detailed project logs with all parameters and results
 - **8-bit Grayscale Output**: Memory-efficient full-scale generation (66% less memory than RGB)
 - **Color Previews**: Thumbnails and previews remain in color for better visualization
+- **Bottom Row Optimization**: Algorithms to maximize bottom row utilization
+- **Top-Left Priority Placement**: Sequential placement from top-left to bottom-right
 
 ## 🛠️ Building from Source
 
@@ -102,27 +108,54 @@ pyinstaller nanofiche_image_prep.spec
 
 The application implements sophisticated packing algorithms:
 
+### Core Packing Algorithms
 - **Rectangle Packing**: Optimizes grid layout to match target aspect ratio while minimizing area
 - **Circle/Ellipse**: Uses spiral placement for optimal space utilization
+- **Binary Search Optimization**: Automatically finds optimal envelope dimensions for maximum efficiency
 - **Numeric Ordering**: Files are sorted by numeric suffix for proper page sequence
 - All algorithms maintain original image aspect ratios within bins
+
+### Advanced Reserve Space Features
+- **Fixed Pixel Reserves**: Exact pixel dimensions (e.g., 5000×5000 center square)
+- **Percentage-based Reserves**: Sized as percentage of envelope width (10%, 15%, 20%)
+- **Shaped Exclusion Zones**: Circle, square, and rectangle reserves at center
+- **Dual Exclusion**: Combination of corner reserves + center shapes
+- **Top-Left Priority**: Sequential placement from (0,0) ensuring first page at top-left
+- **Bottom Row Optimization**: Algorithms to achieve 100% bottom row utilization
+
+### Placement Strategies
+- **Pixel-Perfect Geometry**: Reserves calculated in exact pixel dimensions for precision
+- **Collision Detection**: Tile-level checking against shaped exclusion zones
+- **Optimal Envelope Sizing**: Binary search to find most efficient rectangle dimensions
+- **Visual Preview Generation**: Red overlay highlighting for exact reserve visualization
 
 ### Performance Optimizations
 - **8-bit Grayscale**: Reduces memory usage by 66% compared to RGB
 - **LZW Compression**: Efficient TIFF compression for smaller file sizes
 - **Progressive Processing**: Large datasets processed in batches to manage memory
+- **Efficient Algorithms**: Achieve 90-97% packing efficiency with optimized placement
 
-## 🤝 Contributing
+## 🧪 Test Suite
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add AmazingFeature'`)
-4. Push to branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+The repository includes comprehensive test algorithms for advanced packing scenarios:
 
-## 📄 License
+### Reserve Space Tests
+- `test_fixed_5000_reserve.py` - Fixed 5000×5000 pixel center square
+- `test_shaped_reserve.py` - Percentage-based shaped reserves (circle, square, rectangle)
+- `test_rectangle_with_expanded_reserve.py` - Rectangle with optimized reserve spaces
+- `test_square_with_expanded_reserve.py` - Square with expandable corner reserves
 
-This project is part of the NanoFiche/MicroFiche digitization workflow.
+### Optimization Tests  
+- `test_compare_bottom_filling.py` - Bottom row utilization comparison
+- `test_optimized_6x6_reserve.py` - 6×6 vs 4×4 reserve size optimization
+- `test_binary_search_square_with_reserve.py` - Binary search with reserve constraints
+
+### Advanced Placement Tests
+- `test_rectangle_with_center_shape.py` - Dual exclusion zones (corner + center)
+- `test_forced_larger_reserve.py` - Testing larger reserve impact on efficiency
+
+All tests generate visual previews with highlighted exclusion zones for algorithm verification.
+
 
 ## 🐛 Troubleshooting
 
