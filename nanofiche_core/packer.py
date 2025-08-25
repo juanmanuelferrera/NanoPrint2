@@ -112,20 +112,36 @@ class NanoFichePacker:
             raise ValueError(f"Unsupported envelope shape: {envelope_spec.shape}")
     
     def _pack_square(self, num_bins: int) -> PackingResult:
-        """Pack bins into a square envelope."""
-        # Find optimal square grid
-        side = math.ceil(math.sqrt(num_bins))
-        rows = side
-        columns = side
+        """Pack bins into a square envelope with maximum optimization."""
+        # Zero-waste approach: find minimum square size for exact capacity
+        canvas_size = 1
+        while True:
+            cols = canvas_size // self.bin_width
+            rows = canvas_size // self.bin_height
+            capacity = cols * rows
+            
+            if capacity >= num_bins:
+                break
+            canvas_size += 1
         
-        # Calculate grid dimensions
-        grid_width = columns * self.bin_width
-        grid_height = rows * self.bin_height
+        # Fine-tune to minimize area while maintaining capacity
+        while True:
+            test_size = canvas_size - 1
+            test_cols = test_size // self.bin_width
+            test_rows = test_size // self.bin_height
+            test_capacity = test_cols * test_rows
+            
+            if test_capacity < num_bins:
+                break
+            canvas_size = test_size
         
-        # Force square canvas - use the larger dimension
-        canvas_size = max(grid_width, grid_height)
+        # Calculate final grid
+        columns = canvas_size // self.bin_width
+        rows = canvas_size // self.bin_height
         
         # Center the grid in the square canvas
+        grid_width = columns * self.bin_width
+        grid_height = rows * self.bin_height
         offset_x = (canvas_size - grid_width) // 2
         offset_y = (canvas_size - grid_height) // 2
         
@@ -250,19 +266,54 @@ class NanoFichePacker:
         return int(reserve_width), int(reserve_height)
     
     def _try_pack_square_with_optimized_reserve(self, num_bins: int, side_length: float) -> Tuple[bool, List, Tuple[int, int]]:
-        """Try to pack bins in square with optimized top-left reserve."""
+        """Try to pack bins in square with optimized top-left reserve for perfect bottom row fill."""
         reserve_width, reserve_height = self._calculate_optimized_reserve_size(side_length)
+        
+        # Calculate initial capacity
+        top_right_width = side_length - reserve_width
+        top_right_height = reserve_height
+        top_right_cols = int(top_right_width / self.bin_width)
+        top_right_rows = int(top_right_height / self.bin_height)
+        top_right_capacity = top_right_cols * top_right_rows
+        
+        bottom_width = side_length
+        bottom_height = side_length - reserve_height
+        bottom_cols = int(bottom_width / self.bin_width)
+        bottom_rows = int(bottom_height / self.bin_height)
+        bottom_capacity = bottom_cols * bottom_rows
+        
+        total_capacity = top_right_capacity + bottom_capacity
+        
+        # If we have excess capacity, try to optimize for perfect bottom row fill
+        if total_capacity > num_bins:
+            excess_slots = total_capacity - num_bins
+            
+            # Calculate how many images would be in bottom area
+            images_in_top = min(num_bins, top_right_capacity)
+            images_in_bottom = num_bins - images_in_top
+            
+            if images_in_bottom > 0:
+                # Check if bottom row is partially filled
+                bottom_last_row_images = images_in_bottom % bottom_cols
+                if bottom_last_row_images > 0:
+                    # Partially filled bottom row - try to enlarge reserve to remove excess slots
+                    empty_slots_in_last_row = bottom_cols - bottom_last_row_images
+                    
+                    if empty_slots_in_last_row <= excess_slots:
+                        # We can enlarge reserve width to remove these empty slots
+                        extra_width_needed = empty_slots_in_last_row * self.bin_width
+                        reserve_width += extra_width_needed
+                        
+                        # Recalculate with new reserve width
+                        top_right_width = side_length - reserve_width
+                        top_right_cols = int(top_right_width / self.bin_width)
+                        top_right_capacity = top_right_cols * top_right_rows
+                        total_capacity = top_right_capacity + bottom_capacity
         
         placements = []
         bins_placed = 0
         
         # Area 1: Top-right rectangle
-        top_right_width = side_length - reserve_width
-        top_right_height = reserve_height
-        top_right_cols = int(top_right_width / self.bin_width)
-        top_right_rows = int(top_right_height / self.bin_height)
-        
-        # Place images in top-right area
         for row in range(top_right_rows):
             if bins_placed >= num_bins:
                 break
@@ -276,12 +327,6 @@ class NanoFichePacker:
                     bins_placed += 1
         
         # Area 2: Bottom rectangle (full width)
-        bottom_width = side_length
-        bottom_height = side_length - reserve_height
-        bottom_cols = int(bottom_width / self.bin_width)
-        bottom_rows = int(bottom_height / self.bin_height)
-        
-        # Place remaining images in bottom area
         for row in range(bottom_rows):
             if bins_placed >= num_bins:
                 break
@@ -295,7 +340,7 @@ class NanoFichePacker:
                     bins_placed += 1
         
         success = bins_placed >= num_bins
-        return success, placements, (reserve_width, reserve_height)
+        return success, placements, (int(reserve_width), reserve_height)
     
     def _pack_square_with_optimized_reserve(self, num_bins: int, envelope_spec: EnvelopeSpec) -> PackingResult:
         """Pack bins into square with optimized reserved space using binary search."""
@@ -605,8 +650,8 @@ class NanoFichePacker:
         best_placements = None
         iteration = 0
         
-        # Binary search loop with 1-pixel precision (like original)
-        while max_radius - min_radius > 1.0:
+        # Binary search loop with sub-pixel precision for maximum optimization
+        while max_radius - min_radius > 0.1:
             iteration += 1
             test_radius = (min_radius + max_radius) / 2
             test_area = math.pi * test_radius * test_radius
@@ -1040,7 +1085,7 @@ class NanoFichePacker:
             min_radius = theoretical_radius
             max_radius = best_radius
             
-            while max_radius - min_radius > 1:
+            while max_radius - min_radius > 0.1:
                 test_radius = (min_radius + max_radius) / 2
                 test_placements = self._generate_circular_row_placements(
                     num_bins, test_radius, center_x, center_y
@@ -1215,7 +1260,7 @@ class NanoFichePacker:
         iteration = 0
         
         # Binary search loop
-        while max_radius - min_radius > 1.0:  # 1 pixel precision
+        while max_radius - min_radius > 0.1:  # Sub-pixel precision for maximum optimization
             iteration += 1
             test_radius = (min_radius + max_radius) / 2
             test_area = math.pi * test_radius * test_radius

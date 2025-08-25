@@ -266,6 +266,16 @@ def test_binary_search_square_with_reserve():
             self.reserve_height = reserve_dims[1]
             self.top_right_grid = grid_info[1]
             self.bottom_grid = grid_info[2]
+            # Add envelope_spec for compatibility with current renderer
+            from nanofiche_core.packer import EnvelopeSpec
+            self.envelope_spec = EnvelopeSpec(
+                shape=EnvelopeShape.SQUARE,
+                reserve_enabled=True,
+                reserve_width=reserve_dims[0],
+                reserve_height=reserve_dims[1],
+                reserve_position="top-left",
+                reserve_auto_size=False
+            )
     
     packing_result = MockPackingResultWithReserve(placements, canvas_size, (reserve_width, reserve_height), (capacity, top_right_grid, bottom_grid))
     
