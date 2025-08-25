@@ -133,7 +133,7 @@ class NanoFicheGUI:
         
         # Reserve position
         ttk.Label(self.reserve_dims_frame, text="Position:").pack(side=tk.LEFT)
-        self.reserve_position_var = tk.StringVar(value="center")
+        self.reserve_position_var = tk.StringVar(value="top-left")
         self.reserve_position_menu = ttk.Combobox(self.reserve_dims_frame, 
                                                   textvariable=self.reserve_position_var,
                                                   values=["center", "top-left"],
@@ -142,7 +142,7 @@ class NanoFicheGUI:
         self.reserve_position_menu.pack(side=tk.LEFT, padx=2)
         
         # Auto-optimize checkbox
-        self.reserve_auto_var = tk.BooleanVar(value=False)
+        self.reserve_auto_var = tk.BooleanVar(value=True)
         self.reserve_auto_checkbox = ttk.Checkbutton(self.reserve_dims_frame, 
                                                      text="Auto-optimize",
                                                      variable=self.reserve_auto_var,

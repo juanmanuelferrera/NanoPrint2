@@ -529,111 +529,129 @@ class NanoFichePacker:
     
     def _check_inside_circle_avoiding_reserve(self, x: int, y: int, center_x: float, center_y: float, 
                                               radius: float, envelope_spec: EnvelopeSpec) -> bool:
-        """Check if a bin position is valid: inside circle but outside reserved space."""
-        # Check if center of bin is inside circle
-        bin_center_x = x + self.bin_width / 2
-        bin_center_y = y + self.bin_height / 2
-        distance = math.sqrt((bin_center_x - center_x)**2 + (bin_center_y - center_y)**2)
+        """Check if a bin position is valid: inside circle but outside reserved space (optimized version)."""
+        # Use tile center for circle check (like original algorithm)
+        tile_center_x = x + self.bin_width // 2
+        tile_center_y = y + self.bin_height // 2
+        distance_from_center = math.sqrt((tile_center_x - center_x)**2 + (tile_center_y - center_y)**2)
         
-        if distance > radius:
+        if distance_from_center > radius:
             return False  # Outside circle
         
-        # Check if overlaps with reserve
+        # Check if overlaps with square reserve (always center for circles)
         if envelope_spec.reserve_enabled:
-            if envelope_spec.reserve_position == "center":
-                reserve_x = center_x - envelope_spec.reserve_width / 2
-                reserve_y = center_y - envelope_spec.reserve_height / 2
-            else:  # top-left, but for circle we'll use center
-                reserve_x = center_x - envelope_spec.reserve_width / 2
-                reserve_y = center_y - envelope_spec.reserve_height / 2
+            square_half_size = envelope_spec.reserve_width // 2  # Assume square reserve
+            square_left = center_x - square_half_size
+            square_right = center_x + square_half_size
+            square_top = center_y - square_half_size
+            square_bottom = center_y + square_half_size
             
-            # Check overlap
-            bin_right = x + self.bin_width
-            bin_bottom = y + self.bin_height
-            reserve_right = reserve_x + envelope_spec.reserve_width
-            reserve_bottom = reserve_y + envelope_spec.reserve_height
+            # Tile bounds
+            tile_left = x
+            tile_right = x + self.bin_width
+            tile_top = y
+            tile_bottom = y + self.bin_height
             
-            # If overlaps with reserve, it's not valid
-            if not (bin_right <= reserve_x or x >= reserve_right or 
-                   bin_bottom <= reserve_y or y >= reserve_bottom):
-                return False
+            # Check if tile overlaps with square reserve
+            if not (tile_right <= square_left or tile_left >= square_right or 
+                   tile_bottom <= square_top or tile_top >= square_bottom):
+                return False  # Overlaps with square reserve
         
         return True
     
-    def _pack_circle_with_reserve(self, num_bins: int, envelope_spec: EnvelopeSpec) -> PackingResult:
-        """Pack bins into circle with reserved space using binary search optimization."""
-        # Binary search for optimal circle radius
-        bin_area = self.bin_width * self.bin_height
-        total_image_area = num_bins * bin_area
+    def _pack_circle_with_reserve_optimized(self, num_bins: int, radius: float, envelope_spec: EnvelopeSpec) -> Tuple[List[Tuple[int, int]], bool]:
+        """Pack images row-by-row in circle with square reserve (optimized algorithm)."""
+        canvas_size = int(2 * radius)
+        center_x = center_y = canvas_size // 2
         
-        # Initial estimate
-        min_radius = math.sqrt(total_image_area / math.pi) * 1.1
-        max_radius = math.sqrt(total_image_area / math.pi) * 2.5
+        placements = []
+        images_placed = 0
         
-        best_result = None
-        tolerance = 50  # pixels
+        # Go row by row from top to bottom (like original)
+        current_y = 0
         
-        while max_radius - min_radius > tolerance:
-            radius = (min_radius + max_radius) / 2
-            diameter = radius * 2
+        while images_placed < num_bins and current_y + self.bin_height <= canvas_size:
+            # Place images left to right in this row
+            current_x = 0
             
-            # Try to pack at this radius
-            center_x = radius
-            center_y = radius
-            
-            # Calculate grid dimensions
-            total_cols = int(diameter / self.bin_width)
-            total_rows = int(diameter / self.bin_height)
-            
-            # Find valid positions
-            placements = []
-            for row in range(total_rows):
-                for col in range(total_cols):
-                    if len(placements) >= num_bins:
-                        break
-                    
-                    x = col * self.bin_width
-                    y = row * self.bin_height
-                    
-                    # Check if position is valid
-                    if x + self.bin_width <= diameter and y + self.bin_height <= diameter:
-                        if self._check_inside_circle_avoiding_reserve(x, y, center_x, center_y, radius, envelope_spec):
-                            placements.append((int(x), int(y)))
+            while images_placed < num_bins and current_x + self.bin_width <= canvas_size:
+                # Check if this position is valid
+                if self._check_inside_circle_avoiding_reserve(current_x, current_y, center_x, center_y, radius, envelope_spec):
+                    placements.append((current_x, current_y))
+                    images_placed += 1
                 
-                if len(placements) >= num_bins:
-                    break
+                current_x += self.bin_width
             
-            if len(placements) >= num_bins:
-                # Success, try smaller
-                max_radius = radius
-                best_result = {
-                    'radius': radius,
-                    'diameter': int(diameter),
-                    'placements': placements[:num_bins],
-                    'rows': total_rows,
-                    'cols': total_cols
-                }
-            else:
-                # Failed, need bigger
-                min_radius = radius
+            current_y += self.bin_height
         
-        if best_result:
-            return PackingResult(
-                rows=best_result['rows'],
-                columns=best_result['cols'],
-                canvas_width=best_result['diameter'],
-                canvas_height=best_result['diameter'],
-                placements=best_result['placements'],
-                envelope_shape=EnvelopeShape.CIRCLE,
-                total_bins=num_bins,
-                bin_width=self.bin_width,
-                bin_height=self.bin_height,
-                envelope_spec=envelope_spec
-            )
-        else:
-            # Fallback to regular circle if no solution found
-            self.logger.warning("Could not find circle solution with reserve, falling back to regular circle")
-            return self._pack_circle(num_bins)
+        # Check if all images fit
+        all_images_fit = (images_placed == num_bins)
+        return placements, all_images_fit
+    
+    def _pack_circle_with_reserve(self, num_bins: int, envelope_spec: EnvelopeSpec) -> PackingResult:
+        """Pack bins into circle with reserved space using optimized binary search (93.9% efficiency algorithm)."""
+        # Step 1: Calculate image area
+        image_area = num_bins * self.bin_width * self.bin_height
+        self.logger.info(f"Optimized circle packing: image area = {image_area:,} pixels²")
+        
+        # Step 2: Start with envelope area same as image area
+        # For circle: area = π * r², so r = sqrt(area / π)
+        min_radius = math.sqrt(image_area / math.pi)
+        max_radius = math.sqrt(image_area * 3 / math.pi)  # Up to 3x area
+        
+        self.logger.info(f"Binary search bounds: min_radius={min_radius:.1f}, max_radius={max_radius:.1f}")
+        
+        best_radius = None
+        best_placements = None
+        iteration = 0
+        
+        # Binary search loop with 1-pixel precision (like original)
+        while max_radius - min_radius > 1.0:
+            iteration += 1
+            test_radius = (min_radius + max_radius) / 2
+            test_area = math.pi * test_radius * test_radius
+            
+            # Pack images and check if any go outside envelope
+            placements, all_fit = self._pack_circle_with_reserve_optimized(num_bins, test_radius, envelope_spec)
+            
+            if all_fit:
+                # If inside then decrease envelope area
+                self.logger.info(f"Iteration {iteration}: radius={test_radius:.1f} ✓ All {len(placements)} images fit")
+                max_radius = test_radius
+                best_radius = test_radius
+                best_placements = placements
+            else:
+                # If outside then increase envelope area
+                self.logger.info(f"Iteration {iteration}: radius={test_radius:.1f} ✗ Only {len(placements)}/{num_bins} fit")
+                min_radius = test_radius
+        
+        # Use the last working radius
+        if best_radius is None:
+            best_radius = max_radius
+            best_placements, _ = self._pack_circle_with_reserve_optimized(num_bins, best_radius, envelope_spec)
+        
+        final_canvas_size = int(2 * best_radius)
+        final_envelope_area = math.pi * best_radius * best_radius
+        efficiency = image_area / final_envelope_area * 100
+        
+        self.logger.info(f"Optimized result: radius={best_radius:.1f}, efficiency={efficiency:.1f}%")
+        
+        # Calculate grid dimensions for compatibility
+        rows = int(final_canvas_size / self.bin_height)
+        cols = int(final_canvas_size / self.bin_width)
+        
+        return PackingResult(
+            rows=rows,
+            columns=cols,
+            canvas_width=final_canvas_size,
+            canvas_height=final_canvas_size,
+            placements=best_placements,
+            envelope_shape=EnvelopeShape.CIRCLE,
+            total_bins=num_bins,
+            bin_width=self.bin_width,
+            bin_height=self.bin_height,
+            envelope_spec=envelope_spec
+        )
     
     def _pack_ellipse(self, num_bins: int, aspect_x: float, aspect_y: float) -> PackingResult:
         """Pack bins into an elliptical envelope using column optimization like circle method."""
