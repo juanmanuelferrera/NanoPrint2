@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw
 import math
 
 from .image_bin import ImageBin
-from .packer import PackingResult
+from .packer import PackingResult, EnvelopeShape
 from .logger import log_project
 
 
@@ -112,6 +112,14 @@ class NanoFicheRenderer:
         
         # Add grid lines for better visualization
         self._add_grid_lines(canvas, packing_result, scale_factor)
+        
+        # Draw reserved space if enabled
+        if packing_result.envelope_spec and packing_result.envelope_spec.reserve_enabled:
+            self._draw_reserved_space(canvas, packing_result, scale_factor)
+        
+        # Draw circle boundary if circular envelope
+        if packing_result.envelope_shape == EnvelopeShape.CIRCLE:
+            self._draw_circle_boundary(canvas, packing_result, scale_factor)
         
         # Save preview TIFF
         canvas.save(output_path, format='TIFF', compression='lzw', dpi=(200, 200))
@@ -342,3 +350,106 @@ class NanoFicheRenderer:
             y = int(row * bin_height)
             if y < canvas.height:
                 draw.line([(0, y), (canvas.width - 1, y)], fill='lightgray', width=1)
+    
+    def _draw_reserved_space(self, canvas: Image.Image, packing_result: PackingResult, scale_factor: float):
+        """
+        Draw reserved space visualization on the canvas.
+        
+        Args:
+            canvas: Canvas image to draw on
+            packing_result: Packing result with envelope spec
+            scale_factor: Scale factor for coordinates
+        """
+        if not packing_result.envelope_spec or not packing_result.envelope_spec.reserve_enabled:
+            return
+            
+        draw = ImageDraw.Draw(canvas)
+        envelope_spec = packing_result.envelope_spec
+        
+        # Calculate reserve position based on canvas size
+        canvas_width = int(packing_result.canvas_width * scale_factor)
+        canvas_height = int(packing_result.canvas_height * scale_factor)
+        
+        reserve_width = int(envelope_spec.reserve_width * scale_factor)
+        reserve_height = int(envelope_spec.reserve_height * scale_factor)
+        
+        if envelope_spec.reserve_position == "center":
+            reserve_x = (canvas_width - reserve_width) // 2
+            reserve_y = (canvas_height - reserve_height) // 2
+        else:  # top-left
+            reserve_x = 0
+            reserve_y = 0
+        
+        # Draw semi-transparent rectangle for reserved space
+        # Create overlay with transparency
+        overlay = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        
+        # Draw red semi-transparent rectangle
+        overlay_draw.rectangle(
+            [reserve_x, reserve_y, reserve_x + reserve_width - 1, reserve_y + reserve_height - 1],
+            fill=(255, 0, 0, 64),  # Red with transparency
+            outline=(255, 0, 0, 255),  # Solid red outline
+            width=2
+        )
+        
+        # Draw diagonal lines to mark reserved area
+        overlay_draw.line(
+            [(reserve_x, reserve_y), (reserve_x + reserve_width - 1, reserve_y + reserve_height - 1)],
+            fill=(255, 0, 0, 128),
+            width=1
+        )
+        overlay_draw.line(
+            [(reserve_x + reserve_width - 1, reserve_y), (reserve_x, reserve_y + reserve_height - 1)],
+            fill=(255, 0, 0, 128),
+            width=1
+        )
+        
+        # Add text label
+        try:
+            from PIL import ImageFont
+            font = ImageFont.load_default()
+            text = "RESERVED"
+            text_bbox = overlay_draw.textbbox((0, 0), text, font=font)
+            text_width = text_bbox[2] - text_bbox[0]
+            text_height = text_bbox[3] - text_bbox[1]
+            text_x = reserve_x + (reserve_width - text_width) // 2
+            text_y = reserve_y + (reserve_height - text_height) // 2
+            overlay_draw.text((text_x, text_y), text, fill=(255, 0, 0, 255), font=font)
+        except:
+            pass  # Skip text if font issues
+        
+        # Composite overlay onto canvas
+        if canvas.mode == 'RGB':
+            canvas.paste(overlay, (0, 0), overlay)
+        else:
+            # For grayscale, convert overlay to grayscale
+            overlay_gray = overlay.convert('L')
+            canvas.paste(overlay_gray, (0, 0), overlay_gray)
+    
+    def _draw_circle_boundary(self, canvas: Image.Image, packing_result: PackingResult, scale_factor: float):
+        """
+        Draw circle boundary for circular envelopes.
+        
+        Args:
+            canvas: Canvas image to draw on
+            packing_result: Packing result with circle dimensions
+            scale_factor: Scale factor for coordinates
+        """
+        if packing_result.envelope_shape != EnvelopeShape.CIRCLE:
+            return
+        
+        draw = ImageDraw.Draw(canvas)
+        
+        # Calculate circle parameters
+        diameter = int(packing_result.canvas_width * scale_factor)
+        radius = diameter // 2
+        center_x = radius
+        center_y = radius
+        
+        # Draw circle boundary (ellipse from bbox)
+        draw.ellipse(
+            [0, 0, diameter - 1, diameter - 1],
+            outline='blue',
+            width=2
+        )

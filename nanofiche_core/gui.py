@@ -105,7 +105,55 @@ class NanoFicheGUI:
         ttk.Entry(self.aspect_frame, textvariable=self.aspect_y_var, width=8).pack(side=tk.LEFT, padx=2)
         row += 1
         
-        # 4. Folder Location
+        # 4. Reserved Space Options
+        ttk.Label(main_frame, text="Reserved Space:").grid(row=row, column=0, sticky=tk.W, pady=2)
+        reserve_frame = ttk.Frame(main_frame)
+        reserve_frame.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=2)
+        
+        self.reserve_enabled_var = tk.BooleanVar(value=False)
+        self.reserve_checkbox = ttk.Checkbutton(reserve_frame, text="Enable", 
+                                                variable=self.reserve_enabled_var,
+                                                command=self._toggle_reserve_options)
+        self.reserve_checkbox.pack(side=tk.LEFT)
+        
+        # Reserve dimensions
+        self.reserve_dims_frame = ttk.Frame(reserve_frame)
+        self.reserve_dims_frame.pack(side=tk.LEFT, padx=(10, 0))
+        
+        ttk.Label(self.reserve_dims_frame, text="Size:").pack(side=tk.LEFT)
+        self.reserve_width_var = tk.StringVar(value="5000")
+        self.reserve_height_var = tk.StringVar(value="5000")
+        
+        self.reserve_width_entry = ttk.Entry(self.reserve_dims_frame, textvariable=self.reserve_width_var, width=8)
+        self.reserve_width_entry.pack(side=tk.LEFT, padx=2)
+        ttk.Label(self.reserve_dims_frame, text="x").pack(side=tk.LEFT)
+        self.reserve_height_entry = ttk.Entry(self.reserve_dims_frame, textvariable=self.reserve_height_var, width=8)
+        self.reserve_height_entry.pack(side=tk.LEFT, padx=2)
+        ttk.Label(self.reserve_dims_frame, text="pixels").pack(side=tk.LEFT, padx=(2, 10))
+        
+        # Reserve position
+        ttk.Label(self.reserve_dims_frame, text="Position:").pack(side=tk.LEFT)
+        self.reserve_position_var = tk.StringVar(value="center")
+        self.reserve_position_menu = ttk.Combobox(self.reserve_dims_frame, 
+                                                  textvariable=self.reserve_position_var,
+                                                  values=["center", "top-left"],
+                                                  width=10,
+                                                  state="readonly")
+        self.reserve_position_menu.pack(side=tk.LEFT, padx=2)
+        
+        # Auto-optimize checkbox
+        self.reserve_auto_var = tk.BooleanVar(value=False)
+        self.reserve_auto_checkbox = ttk.Checkbutton(self.reserve_dims_frame, 
+                                                     text="Auto-optimize",
+                                                     variable=self.reserve_auto_var,
+                                                     command=self._toggle_auto_optimize)
+        self.reserve_auto_checkbox.pack(side=tk.LEFT, padx=(10, 0))
+        
+        # Initially disable reserve options
+        self._toggle_reserve_options()
+        row += 1
+        
+        # 5. Folder Location
         ttk.Label(main_frame, text="Raster Folder:").grid(row=row, column=0, sticky=tk.W, pady=2)
         folder_frame = ttk.Frame(main_frame)
         folder_frame.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=2)
@@ -193,6 +241,38 @@ class NanoFicheGUI:
             # Hide aspect ratio inputs
             for widget in self.aspect_frame.winfo_children():
                 widget.pack_forget()
+    
+    def _toggle_reserve_options(self):
+        """Enable/disable reserve dimension inputs based on checkbox."""
+        if self.reserve_enabled_var.get():
+            state = "normal"
+            menu_state = "readonly"
+        else:
+            state = "disabled"
+            menu_state = "disabled"
+        
+        self.reserve_width_entry.config(state=state)
+        self.reserve_height_entry.config(state=state)
+        self.reserve_position_menu.config(state=menu_state)
+        self.reserve_auto_checkbox.config(state="normal" if self.reserve_enabled_var.get() else "disabled")
+        
+        # Trigger auto-optimize toggle
+        self._toggle_auto_optimize()
+    
+    def _toggle_auto_optimize(self):
+        """Enable/disable manual size inputs based on auto-optimize."""
+        if self.reserve_enabled_var.get() and self.reserve_auto_var.get():
+            # Disable manual size inputs when auto-optimize is on
+            self.reserve_width_entry.config(state="disabled")
+            self.reserve_height_entry.config(state="disabled")
+            # Force top-left position for optimization
+            self.reserve_position_var.set("top-left")
+            self.reserve_position_menu.config(state="disabled")
+        elif self.reserve_enabled_var.get():
+            # Enable manual inputs when auto-optimize is off
+            self.reserve_width_entry.config(state="normal")
+            self.reserve_height_entry.config(state="normal")
+            self.reserve_position_menu.config(state="readonly")
     
     def _browse_folder(self):
         """Browse for raster folder."""
@@ -369,7 +449,27 @@ class NanoFicheGUI:
         else:
             aspect_x = aspect_y = 1.0
         
-        return EnvelopeSpec(shape, aspect_x, aspect_y)
+        # Get reserved space settings
+        reserve_enabled = self.reserve_enabled_var.get()
+        try:
+            reserve_width = int(self.reserve_width_var.get()) if reserve_enabled else 5000
+            reserve_height = int(self.reserve_height_var.get()) if reserve_enabled else 5000
+        except (ValueError, AttributeError):
+            reserve_width = reserve_height = 5000
+        
+        reserve_position = self.reserve_position_var.get() if reserve_enabled else "center"
+        reserve_auto_size = self.reserve_auto_var.get() if reserve_enabled else False
+        
+        return EnvelopeSpec(
+            shape=shape,
+            aspect_x=aspect_x,
+            aspect_y=aspect_y,
+            reserve_enabled=reserve_enabled,
+            reserve_width=reserve_width,
+            reserve_height=reserve_height,
+            reserve_position=reserve_position,
+            reserve_auto_size=reserve_auto_size
+        )
     
     def _generate_preview(self):
         """Generate preview TIFF."""

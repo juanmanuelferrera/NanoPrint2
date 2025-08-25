@@ -26,6 +26,11 @@ class EnvelopeSpec:
     aspect_x: float = 1.0  # Width aspect ratio
     aspect_y: float = 1.0  # Height aspect ratio
     square_reserve_size: int = 10000  # Square reserve size in pixels
+    reserve_enabled: bool = False  # Enable reserved space
+    reserve_width: int = 5000  # Fixed width in pixels
+    reserve_height: int = 5000  # Fixed height in pixels
+    reserve_position: str = "center"  # "center" or "top-left"
+    reserve_auto_size: bool = False  # Auto-optimize reserve size for bottom row fill
     
     def __post_init__(self):
         """Validate and normalize aspect ratios."""
@@ -52,6 +57,7 @@ class PackingResult:
     total_bins: int
     bin_width: int
     bin_height: int
+    envelope_spec: EnvelopeSpec = None  # Optional envelope specification for reserved space
 
 
 class NanoFichePacker:
@@ -81,12 +87,22 @@ class NanoFichePacker:
             PackingResult with optimal layout
         """
         self.logger.info(f"Packing {num_bins} bins into {envelope_spec.shape.value} envelope")
+        if envelope_spec.reserve_enabled:
+            self.logger.info(f"Reserved space: {envelope_spec.reserve_width}x{envelope_spec.reserve_height} at {envelope_spec.reserve_position}")
         
         if envelope_spec.shape == EnvelopeShape.SQUARE:
+            if envelope_spec.reserve_enabled:
+                if envelope_spec.reserve_auto_size and envelope_spec.reserve_position == "top-left":
+                    return self._pack_square_with_optimized_reserve(num_bins, envelope_spec)
+                return self._pack_square_with_reserve(num_bins, envelope_spec)
             return self._pack_square(num_bins)
         elif envelope_spec.shape == EnvelopeShape.RECTANGLE:
+            if envelope_spec.reserve_enabled:
+                return self._pack_rectangle_with_reserve(num_bins, envelope_spec)
             return self._pack_rectangle(num_bins, envelope_spec.aspect_x, envelope_spec.aspect_y)
         elif envelope_spec.shape == EnvelopeShape.CIRCLE:
+            if envelope_spec.reserve_enabled:
+                return self._pack_circle_with_reserve(num_bins, envelope_spec)
             return self._pack_circle(num_bins)
         elif envelope_spec.shape == EnvelopeShape.ELLIPSE:
             return self._pack_ellipse(num_bins, envelope_spec.aspect_x, envelope_spec.aspect_y)
@@ -132,6 +148,278 @@ class NanoFichePacker:
             total_bins=num_bins,
             bin_width=self.bin_width,
             bin_height=self.bin_height
+        )
+    
+    def _check_overlap_with_reserve(self, x: int, y: int, envelope_spec: EnvelopeSpec, canvas_width: int, canvas_height: int) -> bool:
+        """Check if a bin at position (x, y) overlaps with reserved space."""
+        if not envelope_spec.reserve_enabled:
+            return False
+            
+        # Calculate reserve position
+        if envelope_spec.reserve_position == "center":
+            reserve_x = (canvas_width - envelope_spec.reserve_width) // 2
+            reserve_y = (canvas_height - envelope_spec.reserve_height) // 2
+        else:  # top-left
+            reserve_x = 0
+            reserve_y = 0
+        
+        # Check overlap
+        bin_right = x + self.bin_width
+        bin_bottom = y + self.bin_height
+        reserve_right = reserve_x + envelope_spec.reserve_width
+        reserve_bottom = reserve_y + envelope_spec.reserve_height
+        
+        # No overlap if bin is completely outside reserve
+        return not (bin_right <= reserve_x or x >= reserve_right or 
+                   bin_bottom <= reserve_y or y >= reserve_bottom)
+    
+    def _pack_square_with_reserve(self, num_bins: int, envelope_spec: EnvelopeSpec) -> PackingResult:
+        """Pack bins into square with reserved space."""
+        # Start with normal square size and increase if needed
+        side = math.ceil(math.sqrt(num_bins))
+        found_solution = False
+        max_attempts = 50
+        attempts = 0
+        
+        while not found_solution and attempts < max_attempts:
+            rows = side
+            columns = side
+            grid_width = columns * self.bin_width
+            grid_height = rows * self.bin_height
+            canvas_size = max(grid_width, grid_height)
+            
+            # Try to place all bins avoiding reserve
+            placements = []
+            offset_x = (canvas_size - grid_width) // 2
+            offset_y = (canvas_size - grid_height) // 2
+            
+            for row in range(rows):
+                for col in range(columns):
+                    if len(placements) >= num_bins:
+                        break
+                    x = offset_x + col * self.bin_width
+                    y = offset_y + row * self.bin_height
+                    
+                    # Check if this position overlaps with reserve
+                    if not self._check_overlap_with_reserve(x, y, envelope_spec, canvas_size, canvas_size):
+                        placements.append((x, y))
+                
+                if len(placements) >= num_bins:
+                    break
+            
+            if len(placements) >= num_bins:
+                found_solution = True
+            else:
+                side += 1  # Increase grid size
+                attempts += 1
+        
+        return PackingResult(
+            rows=rows,
+            columns=columns,
+            canvas_width=canvas_size,
+            canvas_height=canvas_size,
+            placements=placements[:num_bins],
+            envelope_shape=EnvelopeShape.SQUARE,
+            total_bins=num_bins,
+            bin_width=self.bin_width,
+            bin_height=self.bin_height,
+            envelope_spec=envelope_spec
+        )
+    
+    def _calculate_optimized_reserve_size(self, side_length: float) -> Tuple[int, int]:
+        """Calculate optimized reserve size based on square size and bin aspect ratio."""
+        # Use same aspect ratio as bins for reserve
+        reserve_aspect_ratio = self.bin_width / self.bin_height
+        
+        # Reserve area should be roughly 1-2 image areas
+        reserve_area = 1.5 * self.bin_width * self.bin_height
+        
+        # Calculate dimensions with correct aspect ratio
+        reserve_height = math.sqrt(reserve_area / reserve_aspect_ratio)
+        reserve_width = reserve_height * reserve_aspect_ratio
+        
+        # Max 20% of side length
+        max_dimension = side_length * 0.2
+        if reserve_width > max_dimension:
+            reserve_width = max_dimension
+            reserve_height = reserve_width / reserve_aspect_ratio
+        if reserve_height > max_dimension:
+            reserve_height = max_dimension
+            reserve_width = reserve_height * reserve_aspect_ratio
+        
+        return int(reserve_width), int(reserve_height)
+    
+    def _try_pack_square_with_optimized_reserve(self, num_bins: int, side_length: float) -> Tuple[bool, List, Tuple[int, int]]:
+        """Try to pack bins in square with optimized top-left reserve."""
+        reserve_width, reserve_height = self._calculate_optimized_reserve_size(side_length)
+        
+        placements = []
+        bins_placed = 0
+        
+        # Area 1: Top-right rectangle
+        top_right_width = side_length - reserve_width
+        top_right_height = reserve_height
+        top_right_cols = int(top_right_width / self.bin_width)
+        top_right_rows = int(top_right_height / self.bin_height)
+        
+        # Place images in top-right area
+        for row in range(top_right_rows):
+            if bins_placed >= num_bins:
+                break
+            for col in range(top_right_cols):
+                if bins_placed >= num_bins:
+                    break
+                x = reserve_width + col * self.bin_width
+                y = row * self.bin_height
+                if x + self.bin_width <= side_length and y + self.bin_height <= reserve_height:
+                    placements.append((int(x), int(y)))
+                    bins_placed += 1
+        
+        # Area 2: Bottom rectangle (full width)
+        bottom_width = side_length
+        bottom_height = side_length - reserve_height
+        bottom_cols = int(bottom_width / self.bin_width)
+        bottom_rows = int(bottom_height / self.bin_height)
+        
+        # Place remaining images in bottom area
+        for row in range(bottom_rows):
+            if bins_placed >= num_bins:
+                break
+            for col in range(bottom_cols):
+                if bins_placed >= num_bins:
+                    break
+                x = col * self.bin_width
+                y = reserve_height + row * self.bin_height
+                if x + self.bin_width <= side_length and y + self.bin_height <= side_length:
+                    placements.append((int(x), int(y)))
+                    bins_placed += 1
+        
+        success = bins_placed >= num_bins
+        return success, placements, (reserve_width, reserve_height)
+    
+    def _pack_square_with_optimized_reserve(self, num_bins: int, envelope_spec: EnvelopeSpec) -> PackingResult:
+        """Pack bins into square with optimized reserved space using binary search."""
+        # Binary search for optimal square size
+        total_image_area = num_bins * self.bin_width * self.bin_height
+        
+        # Initial bounds
+        side_min = math.sqrt(total_image_area) * 1.0
+        side_max = math.sqrt(total_image_area) * 2.0
+        
+        # Find working upper bound
+        while side_max <= math.sqrt(total_image_area) * 3.0:
+            success, _, _ = self._try_pack_square_with_optimized_reserve(num_bins, side_max)
+            if success:
+                break
+            side_max += math.sqrt(total_image_area) * 0.2
+        
+        # Binary search
+        best_side = side_max
+        best_placements = None
+        best_reserve_dims = None
+        
+        while side_max - side_min > 1:
+            side_mid = (side_min + side_max) / 2
+            success, placements, reserve_dims = self._try_pack_square_with_optimized_reserve(num_bins, side_mid)
+            
+            if success:
+                best_side = side_mid
+                best_placements = placements
+                best_reserve_dims = reserve_dims
+                side_max = side_mid
+            else:
+                side_min = side_mid
+        
+        if best_placements is None:
+            # Fallback
+            _, best_placements, best_reserve_dims = self._try_pack_square_with_optimized_reserve(num_bins, side_max)
+            best_side = side_max
+        
+        canvas_size = int(best_side)
+        
+        # Update envelope spec with optimized dimensions
+        envelope_spec.reserve_width = best_reserve_dims[0]
+        envelope_spec.reserve_height = best_reserve_dims[1]
+        
+        # Calculate grid info for result
+        rows = int(canvas_size / self.bin_height)
+        cols = int(canvas_size / self.bin_width)
+        
+        self.logger.info(f"Optimized square: {canvas_size}x{canvas_size}, reserve: {best_reserve_dims[0]}x{best_reserve_dims[1]}")
+        
+        return PackingResult(
+            rows=rows,
+            columns=cols,
+            canvas_width=canvas_size,
+            canvas_height=canvas_size,
+            placements=best_placements[:num_bins],
+            envelope_shape=EnvelopeShape.SQUARE,
+            total_bins=num_bins,
+            bin_width=self.bin_width,
+            bin_height=self.bin_height,
+            envelope_spec=envelope_spec
+        )
+    
+    def _pack_rectangle_with_reserve(self, num_bins: int, envelope_spec: EnvelopeSpec) -> PackingResult:
+        """Pack bins into rectangle with reserved space."""
+        target_aspect = envelope_spec.aspect_x / envelope_spec.aspect_y
+        
+        # Start with optimal grid and increase if needed
+        best_rows, best_cols = self._find_optimal_grid(num_bins, target_aspect)
+        found_solution = False
+        scale_factor = 1.0
+        max_scale = 3.0
+        
+        while not found_solution and scale_factor <= max_scale:
+            rows = max(best_rows, int(best_rows * scale_factor))
+            cols = max(best_cols, int(best_cols * scale_factor))
+            
+            grid_width = cols * self.bin_width
+            grid_height = rows * self.bin_height
+            
+            # Adjust to exact aspect ratio
+            if grid_width / grid_height > target_aspect:
+                canvas_width = grid_width
+                canvas_height = int(grid_width / target_aspect)
+            else:
+                canvas_height = grid_height
+                canvas_width = int(grid_height * target_aspect)
+            
+            # Try to place all bins avoiding reserve
+            placements = []
+            offset_x = (canvas_width - grid_width) // 2
+            offset_y = (canvas_height - grid_height) // 2
+            
+            for row in range(rows):
+                for col in range(cols):
+                    if len(placements) >= num_bins:
+                        break
+                    x = offset_x + col * self.bin_width
+                    y = offset_y + row * self.bin_height
+                    
+                    # Check if this position overlaps with reserve
+                    if not self._check_overlap_with_reserve(x, y, envelope_spec, canvas_width, canvas_height):
+                        placements.append((x, y))
+                
+                if len(placements) >= num_bins:
+                    break
+            
+            if len(placements) >= num_bins:
+                found_solution = True
+            else:
+                scale_factor += 0.1  # Increase grid size
+        
+        return PackingResult(
+            rows=rows,
+            columns=cols,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            placements=placements[:num_bins],
+            envelope_shape=EnvelopeShape.RECTANGLE,
+            total_bins=num_bins,
+            bin_width=self.bin_width,
+            bin_height=self.bin_height,
+            envelope_spec=envelope_spec
         )
     
     def _pack_rectangle(self, num_bins: int, aspect_x: float, aspect_y: float) -> PackingResult:
@@ -238,6 +526,114 @@ class NanoFichePacker:
             bin_width=self.bin_width,
             bin_height=self.bin_height
         )
+    
+    def _check_inside_circle_avoiding_reserve(self, x: int, y: int, center_x: float, center_y: float, 
+                                              radius: float, envelope_spec: EnvelopeSpec) -> bool:
+        """Check if a bin position is valid: inside circle but outside reserved space."""
+        # Check if center of bin is inside circle
+        bin_center_x = x + self.bin_width / 2
+        bin_center_y = y + self.bin_height / 2
+        distance = math.sqrt((bin_center_x - center_x)**2 + (bin_center_y - center_y)**2)
+        
+        if distance > radius:
+            return False  # Outside circle
+        
+        # Check if overlaps with reserve
+        if envelope_spec.reserve_enabled:
+            if envelope_spec.reserve_position == "center":
+                reserve_x = center_x - envelope_spec.reserve_width / 2
+                reserve_y = center_y - envelope_spec.reserve_height / 2
+            else:  # top-left, but for circle we'll use center
+                reserve_x = center_x - envelope_spec.reserve_width / 2
+                reserve_y = center_y - envelope_spec.reserve_height / 2
+            
+            # Check overlap
+            bin_right = x + self.bin_width
+            bin_bottom = y + self.bin_height
+            reserve_right = reserve_x + envelope_spec.reserve_width
+            reserve_bottom = reserve_y + envelope_spec.reserve_height
+            
+            # If overlaps with reserve, it's not valid
+            if not (bin_right <= reserve_x or x >= reserve_right or 
+                   bin_bottom <= reserve_y or y >= reserve_bottom):
+                return False
+        
+        return True
+    
+    def _pack_circle_with_reserve(self, num_bins: int, envelope_spec: EnvelopeSpec) -> PackingResult:
+        """Pack bins into circle with reserved space using binary search optimization."""
+        # Binary search for optimal circle radius
+        bin_area = self.bin_width * self.bin_height
+        total_image_area = num_bins * bin_area
+        
+        # Initial estimate
+        min_radius = math.sqrt(total_image_area / math.pi) * 1.1
+        max_radius = math.sqrt(total_image_area / math.pi) * 2.5
+        
+        best_result = None
+        tolerance = 50  # pixels
+        
+        while max_radius - min_radius > tolerance:
+            radius = (min_radius + max_radius) / 2
+            diameter = radius * 2
+            
+            # Try to pack at this radius
+            center_x = radius
+            center_y = radius
+            
+            # Calculate grid dimensions
+            total_cols = int(diameter / self.bin_width)
+            total_rows = int(diameter / self.bin_height)
+            
+            # Find valid positions
+            placements = []
+            for row in range(total_rows):
+                for col in range(total_cols):
+                    if len(placements) >= num_bins:
+                        break
+                    
+                    x = col * self.bin_width
+                    y = row * self.bin_height
+                    
+                    # Check if position is valid
+                    if x + self.bin_width <= diameter and y + self.bin_height <= diameter:
+                        if self._check_inside_circle_avoiding_reserve(x, y, center_x, center_y, radius, envelope_spec):
+                            placements.append((int(x), int(y)))
+                
+                if len(placements) >= num_bins:
+                    break
+            
+            if len(placements) >= num_bins:
+                # Success, try smaller
+                max_radius = radius
+                best_result = {
+                    'radius': radius,
+                    'diameter': int(diameter),
+                    'placements': placements[:num_bins],
+                    'rows': total_rows,
+                    'cols': total_cols
+                }
+            else:
+                # Failed, need bigger
+                min_radius = radius
+        
+        if best_result:
+            return PackingResult(
+                rows=best_result['rows'],
+                columns=best_result['cols'],
+                canvas_width=best_result['diameter'],
+                canvas_height=best_result['diameter'],
+                placements=best_result['placements'],
+                envelope_shape=EnvelopeShape.CIRCLE,
+                total_bins=num_bins,
+                bin_width=self.bin_width,
+                bin_height=self.bin_height,
+                envelope_spec=envelope_spec
+            )
+        else:
+            # Fallback to regular circle if no solution found
+            self.logger.warning("Could not find circle solution with reserve, falling back to regular circle")
+            return self._pack_circle(num_bins)
     
     def _pack_ellipse(self, num_bins: int, aspect_x: float, aspect_y: float) -> PackingResult:
         """Pack bins into an elliptical envelope using column optimization like circle method."""
