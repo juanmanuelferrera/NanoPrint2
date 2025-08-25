@@ -12,6 +12,7 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    name: Build Windows Executable
     
     steps:
     - uses: actions/checkout@v4
@@ -35,19 +36,30 @@ jobs:
         echo "Installed packages:"
         pip list
     
-    - name: Build EXE with PyInstaller
+    - name: Build Windows EXE with PyInstaller
       run: |
-        pyinstaller nanofiche_image_prep.spec --clean
+        pyinstaller --onefile --windowed `
+          --name NanoFiche_Image_Prep `
+          --add-data "nanofiche_core;nanofiche_core" `
+          --clean `
+          nanofiche_image_prep.py
     
     - name: Test executable
       run: |
-        dist\NanoFiche_Image_Prep.exe --version || echo "No version flag implemented"
+        if (Test-Path "dist\NanoFiche_Image_Prep.exe") {
+          Write-Host "Executable built successfully!"
+          Get-Item "dist\NanoFiche_Image_Prep.exe" | Select-Object Name, Length, LastWriteTime
+        } else {
+          Write-Error "Executable not found!"
+          exit 1
+        }
     
-    - name: Upload artifact
+    - name: Upload Windows artifact
       uses: actions/upload-artifact@v4
       with:
-        name: NanoFiche-Image-Prep-Windows
+        name: NanoFiche-Windows-EXE
         path: dist/NanoFiche_Image_Prep.exe
+        retention-days: 30
     
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
@@ -57,19 +69,25 @@ jobs:
         token: ${{ secrets.GITHUB_TOKEN }}
         draft: false
         prerelease: false
+        allowUpdates: true
         body: |
-          # NanoFiche Image Prep Release
+          # NanoFiche Image Prep - Windows Release
           
           ## Installation
-          1. Download `NanoFiche_Image_Prep.exe`
-          2. Run the executable (no installation required)
+          1. Download `NanoFiche_Image_Prep.exe` from the assets below
+          2. Run the executable directly (no installation required)
+          3. Windows may show a security warning - click "More info" and "Run anyway"
           
           ## Features
           - Optimal bin packing for raster images
           - Support for square, rectangle, circle, and ellipse envelopes
+          - Binary envelope search algorithm for complex shapes
           - Preview generation with approval workflow
-          - Comprehensive logging
+          - Comprehensive logging system
           
-          ## Requirements
-          - Windows 10 or later
+          ## System Requirements
+          - Windows 10 or later (64-bit)
           - No additional dependencies required
+          
+          ## File Size
+          The executable is approximately 18-20 MB as it includes all Python runtime and dependencies.
