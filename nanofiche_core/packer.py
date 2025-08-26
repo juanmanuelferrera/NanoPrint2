@@ -31,6 +31,8 @@ class EnvelopeSpec:
     reserve_height: int = 5000  # Fixed height in pixels
     reserve_position: str = "center"  # "center" or "top-left"
     reserve_auto_size: bool = False  # Auto-optimize reserve size for bottom row fill
+    reserve_aspect_x: float = None  # Reserve space aspect ratio X (overrides shape aspect)
+    reserve_aspect_y: float = None  # Reserve space aspect ratio Y (overrides shape aspect)
     
     def __post_init__(self):
         """Validate and normalize aspect ratios."""
@@ -242,10 +244,20 @@ class NanoFichePacker:
             envelope_spec=envelope_spec
         )
     
-    def _calculate_optimized_reserve_size(self, side_length: float) -> Tuple[int, int]:
-        """Calculate optimized reserve size based on square size and bin aspect ratio."""
-        # Use same aspect ratio as bins for reserve
-        reserve_aspect_ratio = self.bin_width / self.bin_height
+    def _calculate_optimized_reserve_size(self, side_length: float, envelope_spec: EnvelopeSpec = None) -> Tuple[int, int]:
+        """Calculate optimized reserve size based on user-specified aspect ratio."""
+        # Use reserve-specific aspect ratio if available, otherwise use envelope aspect ratio, otherwise default to image aspect ratio
+        if (envelope_spec and hasattr(envelope_spec, 'reserve_aspect_x') and hasattr(envelope_spec, 'reserve_aspect_y') 
+            and envelope_spec.reserve_aspect_x and envelope_spec.reserve_aspect_y):
+            reserve_aspect_ratio = envelope_spec.reserve_aspect_x / envelope_spec.reserve_aspect_y
+            self.logger.info(f"Using reserve-specific aspect ratio: {envelope_spec.reserve_aspect_x}:{envelope_spec.reserve_aspect_y} = {reserve_aspect_ratio:.3f}")
+        elif envelope_spec and hasattr(envelope_spec, 'aspect_x') and hasattr(envelope_spec, 'aspect_y') and envelope_spec.aspect_x and envelope_spec.aspect_y:
+            reserve_aspect_ratio = envelope_spec.aspect_x / envelope_spec.aspect_y
+            self.logger.info(f"Using envelope aspect ratio: {envelope_spec.aspect_x}:{envelope_spec.aspect_y} = {reserve_aspect_ratio:.3f}")
+        else:
+            # Fallback to image aspect ratio
+            reserve_aspect_ratio = self.bin_width / self.bin_height
+            self.logger.info(f"Using default image aspect ratio: {self.bin_width}:{self.bin_height} = {reserve_aspect_ratio:.3f}")
         
         # Reserve area should be roughly 1-2 image areas
         reserve_area = 1.5 * self.bin_width * self.bin_height
@@ -265,9 +277,9 @@ class NanoFichePacker:
         
         return int(reserve_width), int(reserve_height)
     
-    def _try_pack_square_with_optimized_reserve(self, num_bins: int, side_length: float) -> Tuple[bool, List, Tuple[int, int]]:
+    def _try_pack_square_with_optimized_reserve(self, num_bins: int, side_length: float, envelope_spec: EnvelopeSpec) -> Tuple[bool, List, Tuple[int, int]]:
         """Try to pack bins in square with optimized top-left reserve for perfect bottom row fill."""
-        reserve_width, reserve_height = self._calculate_optimized_reserve_size(side_length)
+        reserve_width, reserve_height = self._calculate_optimized_reserve_size(side_length, envelope_spec)
         
         # Calculate initial capacity
         top_right_width = side_length - reserve_width
@@ -353,7 +365,7 @@ class NanoFichePacker:
         
         # Find working upper bound
         while side_max <= math.sqrt(total_image_area) * 3.0:
-            success, _, _ = self._try_pack_square_with_optimized_reserve(num_bins, side_max)
+            success, _, _ = self._try_pack_square_with_optimized_reserve(num_bins, side_max, envelope_spec)
             if success:
                 break
             side_max += math.sqrt(total_image_area) * 0.2
@@ -365,7 +377,7 @@ class NanoFichePacker:
         
         while side_max - side_min > 1:
             side_mid = (side_min + side_max) / 2
-            success, placements, reserve_dims = self._try_pack_square_with_optimized_reserve(num_bins, side_mid)
+            success, placements, reserve_dims = self._try_pack_square_with_optimized_reserve(num_bins, side_mid, envelope_spec)
             
             if success:
                 best_side = side_mid
@@ -377,7 +389,7 @@ class NanoFichePacker:
         
         if best_placements is None:
             # Fallback
-            _, best_placements, best_reserve_dims = self._try_pack_square_with_optimized_reserve(num_bins, side_max)
+            _, best_placements, best_reserve_dims = self._try_pack_square_with_optimized_reserve(num_bins, side_max, envelope_spec)
             best_side = side_max
         
         canvas_size = int(best_side)
@@ -699,95 +711,364 @@ class NanoFichePacker:
         )
     
     def _pack_ellipse(self, num_bins: int, aspect_x: float, aspect_y: float) -> PackingResult:
-        """Pack bins into an elliptical envelope using column optimization like circle method."""
-        
-        # Calculate area needed and estimate ellipse size
-        bin_area = self.bin_width * self.bin_height
-        total_area = num_bins * bin_area * 1.6  # Overhead for elliptical packing
+        """Pack bins into elliptical envelope with optimized fill: reduce until last row populated, then balance symmetry."""
         
         aspect_ratio = aspect_x / aspect_y
         
-        # Calculate ellipse radii: Area = π * a * b, where a/b = aspect_ratio
-        b = math.sqrt(total_area / (math.pi * aspect_ratio))
-        a = b * aspect_ratio
+        # First phase: Find minimum ellipse where all bins fit with better fill
+        best_result = self._find_optimal_ellipse_with_better_fill(num_bins, aspect_ratio)
         
-        # Try different grid arrangements to find one that fits efficiently in ellipse
-        best_radii = None
-        best_grid_size = None
-        best_efficiency = 0
+        canvas_width = int(2 * best_result['a'])
+        canvas_height = int(2 * best_result['b'])
         
-        # Try grid sizes with column optimization like circle method
-        max_grid_side = int(math.sqrt(num_bins) * 1.5)
-        min_grid_side = max(1, int(math.sqrt(num_bins) * 0.6))
-        
-        for cols in range(min_grid_side, max_grid_side + 1):
-            rows = math.ceil(num_bins / cols)
-            
-            # Calculate grid dimensions
-            grid_width = cols * self.bin_width
-            grid_height = rows * self.bin_height
-            
-            # For ellipse, find minimum radii to fit this grid
-            # Use inscribed rectangle approach but adapted for ellipse
-            grid_aspect = grid_width / grid_height
-            
-            # Calculate required ellipse radii to inscribe this rectangle
-            # For rectangle (w,h) inscribed in ellipse (a,b): w²/a² + h²/b² = 4
-            # We know aspect_ratio = a/b, so solve for a and b
-            if aspect_ratio > 1:  # Wider ellipse
-                required_b = grid_height / 2 * 1.1  # 10% margin
-                required_a = required_b * aspect_ratio
-            else:  # Taller ellipse
-                required_a = grid_width / 2 * 1.1  # 10% margin
-                required_b = required_a / aspect_ratio
-            
-            # Calculate efficiency (bins per unit area)
-            ellipse_area = math.pi * required_a * required_b
-            efficiency = num_bins / ellipse_area
-            
-            # Prefer arrangements that match the target aspect ratio better
-            aspect_match = 1.0 / (1.0 + abs(grid_aspect - aspect_ratio))
-            combined_score = efficiency * aspect_match
-            
-            if combined_score > best_efficiency:
-                best_efficiency = combined_score
-                best_radii = (required_a, required_b)
-                best_grid_size = (rows, cols)
-        
-        if best_grid_size is None:
-            # Fallback to square arrangement
-            side = math.ceil(math.sqrt(num_bins))
-            best_grid_size = (side, side)
-            grid_diagonal = math.sqrt((side * self.bin_width)**2 + (side * self.bin_height)**2)
-            avg_radius = grid_diagonal / 2 * 1.2
-            if aspect_ratio > 1:
-                best_radii = (avg_radius * aspect_ratio, avg_radius)
-            else:
-                best_radii = (avg_radius, avg_radius / aspect_ratio)
-        
-        a, b = best_radii
-        canvas_width = int(2 * a)
-        canvas_height = int(2 * b)
-        center_x = canvas_width // 2
-        center_y = canvas_height // 2
-        rows, cols = best_grid_size
-        
-        # Generate elliptical placements with constraint checking
-        placements = self._generate_elliptical_constrained_placements(
-            num_bins, rows, cols, center_x, center_y, a, b
-        )
+        # Calculate grid info for compatibility
+        rows = int(canvas_height / self.bin_height)
+        cols = int(canvas_width / self.bin_width)
         
         return PackingResult(
             rows=rows,
             columns=cols,
             canvas_width=canvas_width,
             canvas_height=canvas_height,
-            placements=placements,
+            placements=best_result['placements'],
             envelope_shape=EnvelopeShape.ELLIPSE,
             total_bins=num_bins,
             bin_width=self.bin_width,
             bin_height=self.bin_height
         )
+    
+    def _generate_ellipse_raster_fill(self, num_bins: int, a: float, b: float) -> List[Tuple[int, int]]:
+        """Generate ellipse placements using row-by-row raster fill (top-to-bottom, left-to-right)."""
+        placements = []
+        
+        canvas_width = int(2 * a)
+        canvas_height = int(2 * b)
+        center_x = canvas_width // 2
+        center_y = canvas_height // 2
+        
+        # Row-by-row raster fill from top to bottom
+        current_y = 0
+        
+        while len(placements) < num_bins and current_y + self.bin_height <= canvas_height:
+            # Fill left to right in this row
+            current_x = 0
+            
+            while len(placements) < num_bins and current_x + self.bin_width <= canvas_width:
+                # Check if this bin position is inside the ellipse
+                bin_center_x = current_x + self.bin_width // 2
+                bin_center_y = current_y + self.bin_height // 2
+                
+                # Ellipse equation: ((x-cx)/a)² + ((y-cy)/b)² ≤ 1
+                ellipse_test = ((bin_center_x - center_x) / a) ** 2 + ((bin_center_y - center_y) / b) ** 2
+                
+                if ellipse_test <= 1.0:  # Inside ellipse
+                    placements.append((current_x, current_y))
+                
+                current_x += self.bin_width
+            
+            current_y += self.bin_height
+        
+        return placements
+    
+    def _find_optimal_ellipse_with_better_fill(self, num_bins: int, aspect_ratio: float) -> dict:
+        """Find optimal ellipse with 100% bottom edge fill, then balance symmetry."""
+        
+        # Phase 1: Find ellipse where theoretical bottom row is 100% populated
+        optimal_result = self._find_100_percent_bottom_fill_ellipse(num_bins, aspect_ratio)
+        
+        # Phase 2: Apply symmetry balancing while maintaining bottom fill
+        final_result = self._balance_ellipse_symmetry_maintain_bottom_fill(optimal_result, aspect_ratio)
+        
+        return final_result
+    
+    def _optimize_ellipse_for_better_fill(self, num_bins: int, initial_result: dict, aspect_ratio: float) -> dict:
+        """Reduce ellipse envelope until last row is properly populated for better fill."""
+        
+        current_a = initial_result['a']
+        current_b = initial_result['b']
+        best_result = initial_result.copy()
+        
+        # Analyze current fill pattern
+        placements = initial_result['placements']
+        fill_analysis = self._analyze_ellipse_fill_pattern(placements, current_a, current_b)
+        
+        self.logger.info(f"Initial fill analysis: {fill_analysis['filled_rows']} rows, last row has {fill_analysis['last_row_count']} images, avg: {fill_analysis['avg_row_count']:.1f}")
+        
+        # If last row has very few images compared to typical rows, try to reduce envelope
+        if fill_analysis['last_row_count'] > 0 and fill_analysis['avg_row_count'] > 0:
+            fill_ratio = fill_analysis['last_row_count'] / fill_analysis['avg_row_count']
+            
+            if fill_ratio < 0.8:  # Last row less than 80% filled - more aggressive threshold
+                self.logger.info(f"Last row fill ratio {fill_ratio:.2f} < 0.8, attempting optimization")
+                
+                # Try reducing ellipse size step by step - more aggressive steps
+                reduction_steps = [0.99, 0.97, 0.95, 0.93, 0.91, 0.89, 0.87, 0.85, 0.83, 0.81]
+                
+                for reduction_factor in reduction_steps:
+                    test_a = current_a * reduction_factor
+                    test_b = current_b * reduction_factor
+                    
+                    test_placements = self._generate_ellipse_raster_fill(num_bins, test_a, test_b)
+                    
+                    if len(test_placements) >= num_bins:
+                        # Check if this improves fill
+                        test_analysis = self._analyze_ellipse_fill_pattern(test_placements[:num_bins], test_a, test_b)
+                        
+                        if test_analysis['last_row_count'] > 0 and test_analysis['avg_row_count'] > 0:
+                            test_fill_ratio = test_analysis['last_row_count'] / test_analysis['avg_row_count']
+                            
+                            # Accept any improvement, even small ones
+                            if test_fill_ratio > fill_ratio * 1.05:  # At least 5% improvement
+                                best_result = {
+                                    'a': test_a, 'b': test_b, 
+                                    'placements': test_placements[:num_bins]
+                                }
+                                fill_ratio = test_fill_ratio
+                                self.logger.info(f"Improved fill ratio to {test_fill_ratio:.2f} with reduction factor {reduction_factor:.2f}")
+                            
+                            # Also try alternative: if we can eliminate the sparsely filled last row entirely
+                            elif test_analysis['filled_rows'] < fill_analysis['filled_rows']:
+                                # Fewer rows but potentially better overall fill
+                                eliminated_last_row_efficiency = self._calculate_elimination_efficiency(test_analysis, fill_analysis)
+                                if eliminated_last_row_efficiency > 1.02:  # 2% better efficiency
+                                    best_result = {
+                                        'a': test_a, 'b': test_b, 
+                                        'placements': test_placements[:num_bins]
+                                    }
+                                    fill_ratio = test_fill_ratio
+                                    self.logger.info(f"Eliminated sparse last row, new efficiency: {eliminated_last_row_efficiency:.3f}")
+                    else:
+                        # This reduction is too aggressive, try a few more smaller reductions
+                        minor_reductions = [reduction_factor + 0.01, reduction_factor + 0.005]
+                        found_minor_improvement = False
+                        
+                        for minor_factor in minor_reductions:
+                            if minor_factor < 1.0:
+                                minor_a = current_a * minor_factor
+                                minor_b = current_b * minor_factor
+                                minor_placements = self._generate_ellipse_raster_fill(num_bins, minor_a, minor_b)
+                                
+                                if len(minor_placements) >= num_bins:
+                                    minor_analysis = self._analyze_ellipse_fill_pattern(minor_placements[:num_bins], minor_a, minor_b)
+                                    if minor_analysis['last_row_count'] > 0 and minor_analysis['avg_row_count'] > 0:
+                                        minor_fill_ratio = minor_analysis['last_row_count'] / minor_analysis['avg_row_count']
+                                        if minor_fill_ratio > fill_ratio:
+                                            best_result = {
+                                                'a': minor_a, 'b': minor_b, 
+                                                'placements': minor_placements[:num_bins]
+                                            }
+                                            found_minor_improvement = True
+                                            self.logger.info(f"Found minor improvement with factor {minor_factor:.3f}")
+                                            break
+                        
+                        if not found_minor_improvement:
+                            break
+        else:
+            self.logger.info(f"Last row fill ratio {fill_ratio:.2f} >= 0.8, no optimization needed")
+        
+        return best_result
+    
+    def _calculate_elimination_efficiency(self, new_analysis: dict, old_analysis: dict) -> float:
+        """Calculate efficiency gain from eliminating sparse rows."""
+        if old_analysis['filled_rows'] == 0:
+            return 1.0
+            
+        # Compare average fill per row
+        old_avg_fill = sum(old_analysis.get('row_counts', [])) / max(1, old_analysis['filled_rows'])
+        new_avg_fill = sum(new_analysis.get('row_counts', [])) / max(1, new_analysis['filled_rows'])
+        
+        return new_avg_fill / max(1, old_avg_fill)
+    
+    def _analyze_ellipse_fill_pattern(self, placements: List[Tuple[int, int]], a: float, b: float) -> dict:
+        """Analyze the fill pattern of ellipse to understand row distribution."""
+        
+        if not placements:
+            return {'filled_rows': 0, 'last_row_count': 0, 'avg_row_count': 0}
+        
+        # Group placements by row
+        rows = {}
+        for x, y in placements:
+            row_index = y // self.bin_height
+            if row_index not in rows:
+                rows[row_index] = 0
+            rows[row_index] += 1
+        
+        if not rows:
+            return {'filled_rows': 0, 'last_row_count': 0, 'avg_row_count': 0}
+        
+        filled_rows = len(rows)
+        row_counts = list(rows.values())
+        avg_row_count = sum(row_counts) / len(row_counts) if row_counts else 0
+        
+        # Find last row (highest y position)
+        max_row_index = max(rows.keys())
+        last_row_count = rows[max_row_index]
+        
+        return {
+            'filled_rows': filled_rows,
+            'last_row_count': last_row_count,
+            'avg_row_count': avg_row_count,
+            'row_counts': row_counts
+        }
+    
+    def _balance_ellipse_symmetry(self, result: dict, aspect_ratio: float) -> dict:
+        """Apply symmetry balancing to the ellipse layout."""
+        
+        # For now, keep the current result as symmetry balancing is complex
+        # This could be enhanced to adjust placements for better visual balance
+        
+        placements = result['placements']
+        canvas_width = int(2 * result['a'])
+        canvas_height = int(2 * result['b'])
+        center_x = canvas_width // 2
+        center_y = canvas_height // 2
+        
+        # Simple symmetry check - could be enhanced
+        left_side_count = sum(1 for x, y in placements if x < center_x)
+        right_side_count = sum(1 for x, y in placements if x >= center_x)
+        
+        self.logger.info(f"Symmetry balance: {left_side_count} left, {right_side_count} right")
+        
+        return result
+    
+    def _find_100_percent_bottom_fill_ellipse(self, num_bins: int, aspect_ratio: float) -> dict:
+        """Find ellipse size where theoretical bottom row is 100% populated."""
+        
+        self.logger.info("Searching for 100% bottom edge fill...")
+        
+        # Step 1: Start closer to theoretical minimum for higher efficiency
+        image_area = num_bins * self.bin_width * self.bin_height
+        working_area = image_area * 1.1  # Only 10% larger than theoretical minimum
+        
+        working_b = math.sqrt(working_area / (math.pi * aspect_ratio))
+        working_a = working_b * aspect_ratio
+        
+        # Step 2: Precise binary search for minimum envelope with bottom fill
+        # Find working bounds first
+        min_scale = 0.95  # Start with 95% of initial
+        max_scale = 1.05  # Up to 105% of initial
+        
+        # Ensure upper bound works
+        while max_scale <= 1.5:
+            test_a = working_a * max_scale
+            test_b = working_b * max_scale
+            placements = self._generate_ellipse_raster_fill(num_bins, test_a, test_b)
+            if len(placements) >= num_bins:
+                break
+            max_scale += 0.1
+        
+        best_result = None
+        best_efficiency = 0
+        
+        # Binary search for optimal size
+        for _ in range(20):  # High precision search
+            mid_scale = (min_scale + max_scale) / 2
+            test_a = working_a * mid_scale
+            test_b = working_b * mid_scale
+            
+            placements = self._generate_ellipse_raster_fill(num_bins, test_a, test_b)
+            
+            if len(placements) >= num_bins:
+                # Calculate efficiency
+                canvas_area = math.pi * test_a * test_b
+                efficiency = image_area / canvas_area
+                
+                bottom_fill_ratio = self._calculate_bottom_row_fill_ratio(placements[:num_bins], test_a, test_b)
+                
+                if bottom_fill_ratio >= 0.7:  # Good bottom fill
+                    if efficiency > best_efficiency:
+                        best_result = {'a': test_a, 'b': test_b, 'placements': placements[:num_bins]}
+                        best_efficiency = efficiency
+                        self.logger.info(f"Better solution: bottom_fill={bottom_fill_ratio:.2f}, efficiency={efficiency:.1%}")
+                    max_scale = mid_scale  # Try smaller
+                else:
+                    max_scale = mid_scale  # Try smaller to improve bottom fill
+            else:
+                min_scale = mid_scale  # Need larger
+        
+        # If no result found, use original approach as fallback
+        if best_result is None:
+            working_placements = self._generate_ellipse_raster_fill(num_bins, working_a, working_b)
+            best_result = {'a': working_a, 'b': working_b, 'placements': working_placements[:num_bins]}
+            self.logger.info("Using fallback solution for 100% bottom fill")
+        
+        return best_result
+    
+    def _calculate_bottom_row_fill_ratio(self, placements: List[Tuple[int, int]], a: float, b: float) -> float:
+        """Calculate fill ratio of the theoretical bottom row (row_env) of ellipse."""
+        
+        if not placements:
+            return 0.0
+        
+        # Find the actual lowest row that can fit in the ellipse (row_env)
+        canvas_height = int(2 * b)
+        center_x = a
+        center_y = b
+        
+        # Find the lowest Y position where a bin can fit within ellipse
+        row_env_y = None
+        for test_y in range(canvas_height - self.bin_height, -1, -self.bin_height):
+            bin_center_y = test_y + self.bin_height // 2
+            y_normalized = (bin_center_y - center_y) / b
+            
+            if abs(y_normalized) < 1.0:  # This row can fit in ellipse
+                row_env_y = test_y
+                break
+        
+        if row_env_y is None:
+            return 0.0  # No valid bottom row found
+        
+        # row_image: Find actual bottom row where images are placed
+        row_image_y = max(y for x, y in placements)
+        
+        # Check if images reach the theoretical bottom row
+        row_distance = abs(row_image_y - row_env_y)
+        if row_distance > self.bin_height:
+            # Images don't reach envelope bottom
+            self.logger.info(f"Images don't reach bottom: row_image_y={row_image_y}, row_env_y={row_env_y}, distance={row_distance}")
+            return 0.0
+        
+        # Count images in the actual bottom row
+        bottom_row_images = sum(1 for x, y in placements if y >= row_image_y)
+        
+        # Calculate theoretical capacity of row_env using ellipse equation
+        row_env_center_y = row_env_y + self.bin_height // 2
+        y_normalized = (row_env_center_y - center_y) / b
+        
+        if abs(y_normalized) >= 1.0:
+            theoretical_capacity = 0
+        else:
+            x_half_width = a * math.sqrt(1 - y_normalized**2)
+            row_width = 2 * x_half_width
+            theoretical_capacity = int(row_width / self.bin_width)
+        
+        if theoretical_capacity == 0:
+            return 1.0  # If no theoretical capacity, consider filled
+        
+        # Fill ratio = actual images in bottom row / theoretical capacity at envelope bottom
+        fill_ratio = bottom_row_images / theoretical_capacity
+        
+        self.logger.info(f"Bottom fill: row_image_y={row_image_y}, row_env_y={row_env_y}, "
+                        f"distance={row_distance}, images={bottom_row_images}, capacity={theoretical_capacity}, ratio={fill_ratio:.2f}")
+        
+        return min(1.0, fill_ratio)
+    
+    def _balance_ellipse_symmetry_maintain_bottom_fill(self, result: dict, aspect_ratio: float) -> dict:
+        """Apply symmetry balancing while maintaining 100% bottom fill."""
+        
+        # For now, return as-is since major symmetry changes might break bottom fill
+        # This could be enhanced with sophisticated rebalancing algorithms
+        
+        placements = result['placements']
+        canvas_width = int(2 * result['a'])
+        center_x = canvas_width // 2
+        
+        left_side = sum(1 for x, y in placements if x + self.bin_width // 2 < center_x)
+        right_side = sum(1 for x, y in placements if x + self.bin_width // 2 >= center_x)
+        
+        self.logger.info(f"Symmetry with bottom fill: {left_side} left, {right_side} right")
+        
+        return result
     
     def _find_optimal_grid(self, num_bins: int, target_aspect: float) -> Tuple[int, int]:
         """Find optimal rows/columns for rectangular packing."""

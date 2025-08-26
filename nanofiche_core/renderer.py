@@ -121,6 +121,10 @@ class NanoFicheRenderer:
         if packing_result.envelope_shape == EnvelopeShape.CIRCLE:
             self._draw_circle_boundary(canvas, packing_result, scale_factor)
         
+        # Draw ellipse boundary if elliptical envelope
+        if packing_result.envelope_shape == EnvelopeShape.ELLIPSE:
+            self._draw_ellipse_boundary(canvas, packing_result, scale_factor)
+        
         # Save preview TIFF
         canvas.save(output_path, format='TIFF', compression='lzw', dpi=(200, 200))
         self.logger.info(f"Preview TIFF saved: {output_path}")
@@ -448,8 +452,27 @@ class NanoFicheRenderer:
         center_y = radius
         
         # Draw circle boundary (ellipse from bbox)
-        draw.ellipse(
-            [0, 0, diameter - 1, diameter - 1],
-            outline='blue',
-            width=2
-        )
+        bbox = [center_x - radius, center_y - radius, center_x + radius, center_y + radius]
+        draw.ellipse(bbox, outline='blue', width=max(1, int(2 * scale_factor)))
+    
+    def _draw_ellipse_boundary(self, canvas: Image.Image, packing_result: PackingResult, scale_factor: float):
+        """
+        Draw ellipse boundary for elliptical envelopes.
+        
+        Args:
+            canvas: Canvas image to draw on
+            packing_result: Packing result with ellipse dimensions
+            scale_factor: Scale factor for coordinates
+        """
+        if packing_result.envelope_shape != EnvelopeShape.ELLIPSE:
+            return
+        
+        draw = ImageDraw.Draw(canvas)
+        
+        # Calculate ellipse parameters
+        width = int(packing_result.canvas_width * scale_factor)
+        height = int(packing_result.canvas_height * scale_factor)
+        
+        # Draw ellipse boundary
+        bbox = [0, 0, width, height]
+        draw.ellipse(bbox, outline='blue', width=max(1, int(2 * scale_factor)))

@@ -372,7 +372,19 @@ class NanoFicheGUI:
                 if file_path.is_file() and file_path.suffix.lower() in image_extensions:
                     image_files.append(file_path)
             
-            image_files.sort()
+            # Sort files numerically by extracting numbers from filename
+            import re
+            def natural_sort_key(path):
+                """Extract numeric part from filename for proper sorting."""
+                filename = path.name
+                # Look for numbers in filename
+                numbers = re.findall(r'\d+', filename)
+                if numbers:
+                    # Use the last number found (most specific)
+                    return int(numbers[-1])
+                return 0
+            
+            image_files.sort(key=natural_sort_key)
             
             if not image_files:
                 self.root.after(0, lambda: self._validation_complete("No image files found", None, None))
